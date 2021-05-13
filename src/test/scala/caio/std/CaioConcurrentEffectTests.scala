@@ -3,46 +3,36 @@ package caio.std
 import caio.Event._
 import caio.implicits.StaticImplicits
 import caio.mtl.ApplicativeFail
-import caio.{Caio, Failure}
+import caio.{Caio, Event, Failure}
 
 import cats.{ Applicative, ApplicativeError, Monoid }
 import cats.syntax.parallel._
 import cats.data.NonEmptyList
 import cats.mtl.{ Listen, Tell, Stateful }
-import cats.effect.{Clock, ContextShift, IO, Timer}
-import cats.effect.concurrent.Ref
+import cats.effect.Ref
+
 import org.scalatest.{AsyncFunSpec, Matchers}
 
-import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
 
 class CaioConcurrentEffectTests extends AsyncFunSpec with Matchers {
 
   type CaioT[A] = Caio[Int, Failure, EventLog, A]
 
-  implicit val CS: ContextShift[IO] = IO.contextShift(ExecutionContext.global)
-
   val C = new StaticImplicits[Int, Failure, EventLog] {
     protected implicit def ML: Monoid[EventLog] = EventMonoid
   }
 
-  import C._
+  import C.{staticCaioMonad => _, _}
 
-  val effect = new CaioConcurrentEffect[Int, Failure, EventLog](0)((_, _) => IO.unit)((_, _, _) => IO.unit)((_, _, _) => IO.unit)
-
-  val T: Timer[IO] = IO.timer(ExecutionContext.global)
-
-  val timer = new Timer[CaioT] {
-    val clock: Clock[CaioT]                          = Clock.create[CaioT]
-    def sleep(duration: FiniteDuration): CaioT[Unit] = staticCaioConcurrent.liftIO(T.sleep(duration))
-  }
+  val dispatcher: CaioDispatcher[Int, Failure, EventLog] = CaioDispatcher.unsafe[Int, Failure, EventLog](0)()()()
 
   def run[A](caio: CaioT[A]): A =
-    effect.toIO(caio).unsafeRunSync()
+    dispatcher.unsafeRunSync(caio)
 
   describe("Async shouldnt loop") {
     it("Works with timer async case") {
-      run(timer.sleep(1.millis)) shouldBe ()
+      run(Caio.sleep(1.millis)(Event.EventMonoid)) shouldBe ()
     }
   }
 
@@ -53,7 +43,7 @@ class CaioConcurrentEffectTests extends AsyncFunSpec with Matchers {
       val program =
         for {
           ref  <- Ref.of[CaioT, List[Int]](Nil)
-          _    <- numbers.parTraverse_ { n => timer.sleep(random.nextInt(100).millis) *> ref.update(_ :+ n) }
+          _    <- numbers.parTraverse_[CaioT, Unit] { n => Caio.sleep(random.nextInt(100).millis)(Event.EventMonoid) *> ref.update(_ :+ n) }
           list <- ref.get
         } yield NonEmptyList.fromListUnsafe(list)
 
@@ -103,7 +93,7 @@ class CaioConcurrentEffectTests extends AsyncFunSpec with Matchers {
       val program =
         Listen[CaioT, EventLog].listen {
           for {
-            _ <- effect.start(Tell[CaioT, EventLog].tell(Vector(event1)))
+            _ <- Tell[CaioT, EventLog].tell(Vector(event1)).start[Int, Failure, EventLog, Unit]
             _ <- Tell[CaioT, EventLog].tell(Vector(event2))
           } yield ()
         }
@@ -115,7 +105,7 @@ class CaioConcurrentEffectTests extends AsyncFunSpec with Matchers {
       val program =
         Listen[CaioT, EventLog].listen {
           for {
-            fiber <- effect.start(Tell[CaioT, EventLog].tell(Vector(event1)))
+            fiber <- Tell[CaioT, EventLog].tell(Vector(event1)).start[Int, Failure, EventLog, Unit]
             _     <- Tell[CaioT, EventLog].tell(Vector(event2))
             _     <- fiber.join
           } yield ()
@@ -142,7 +132,7 @@ class CaioConcurrentEffectTests extends AsyncFunSpec with Matchers {
     it("Should set state when a fiber is joined") {
       val program =
         for {
-          fiber <- effect.start(Stateful[CaioT, Int].set(1))
+          fiber <- Stateful[CaioT, Int].set(1).start[Int, Failure, EventLog, Unit]
           _     <- fiber.join
           state <- Stateful[CaioT, Int].get
         } yield state

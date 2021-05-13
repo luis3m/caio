@@ -1,193 +1,178 @@
 package caio
 
-import caio.std.{CaioApplicative, CaioBracket, CaioConcurrent}
-import cats.Monoid
-import cats.data.NonEmptyList
-import cats.effect.{Bracket, Concurrent, ConcurrentEffect, ContextShift, ExitCase, Fiber, IO, Resource, Timer}
-import cats.effect.ExitCase.Error
-import cats.effect.concurrent.Ref
+import caio.std.{CaioAsync, CaioApplicative, CaioClock, CaioConcurrent, CaioFunctor, CaioMonad, CaioMonadCancel, CaioSpawn, CaioTemporal}
+import cats.{Align, Functor, Monoid, Parallel, SemigroupK, Traverse}
+import cats.data.{Ior, NonEmptyList}
+import cats.effect.{Async, Deferred, IO, Ref, Resource}
+import cats.effect.kernel.{ParallelF, Poll}
 
 import scala.annotation.tailrec
 import scala.concurrent.duration.FiniteDuration
-import scala.concurrent.{Future, TimeoutException}
+import scala.concurrent.Future
 import scala.util.Try
 import scala.util.control.NonFatal
 
 sealed trait Caio[-C, +V, +L, +A] {
-  @inline def as[B](b: => B): Caio[C, V, L, B] =
-    MapCaio[C, V, L, A, B](this, _ => b)
+  final def <*[C1 <: C, V1 >: V, L1 >: L](fb: => Caio[C1, V1, L1, Any]): Caio[C1, V1, L1, A] =
+    flatMap[C1, V1, L1, A](a => fb.as(a))
 
-  @inline def attempt: Caio[C, V, L, Either[Throwable, A]] =
-    HandleErrorCaio(MapCaio[C, V, L, A, Either[Throwable, A]](this, Right.apply), ex => PureCaio(Left(ex)))
+  final def <*>[C1 <: C, V1 >: V, L1 >: L, B](fb: => Caio[C1, V1, L1, B]): Caio[C1, V1, L1, (A, B)] =
+    flatMap[C1, V1, L1, (A, B)](a => fb.map(b => (a, b)))
 
-  def background[C1 <: C, V1 >: V, L1 >: L]
-    (implicit M: Monoid[L1], CS: ContextShift[IO]): Resource[Caio[C1, V1, L1, *], Caio[C1, V1, L1, A]] = {
-    implicit val applicative = new CaioApplicative[C1, V1, L1] {}
-    Resource.make(start[C1, V1, L1, A])(_.cancel).map(_.join)
-  }
+  final def *>[C1 <: C, V1 >: V, L1 >: L, B](fb: => Caio[C1, V1, L1, B]): Caio[C1, V1, L1, B] =
+    flatMap[C1, V1, L1, B](_ => fb)
 
-  def bracket[C1 <: C, V1 >: V, L1 >: L, A1 >: A, B]
+  final def <&[C1 <: C, V1 >: V, L1 >: L: Monoid](that: Caio[C1, V1, L1, Any]): Caio[C1, V1, L1, A] =
+    both(that).map { case (a, _) => a }
+
+  final def <&>[C1 <: C, V1 >: V, L1 >: L: Monoid, B](that: Caio[C1, V1, L1, B]): Caio[C1, V1, L1, (A, B)] =
+    both(that)
+
+  final def &>[C1 <: C, V1 >: V, L1 >: L: Monoid, B](that: Caio[C1, V1, L1, B]): Caio[C1, V1, L1, B] =
+    both(that).map { case (_, b) => b }
+
+  final def as[B](b: => B): Caio[C, V, L, B] =
+    this.map(_ => b)
+
+  final def attempt: Caio[C, V, L, Either[Throwable, A]] =
+    map(Right.apply).handleErrorWith(ex => Caio.pure(Left(ex)))
+
+  final def background[C1 <: C, V1 >: V, L1 >: L, A1 >: A](implicit M: Monoid[L1]): Resource[Caio[C1, V1, L1, *], Caio[C1, V1, L1, OutcomeCaio[C1, V1, L1, A1]]] =
+    CaioSpawn[C1, V1, L1].background(this)
+
+  final def bracket[C1 <: C, V1 >: V, L1 >: L, A1 >: A, B]
     (use: A1 => Caio[C1, V1, L1, B])
     (release: A1 => Caio[C1, V1, L1, Unit])
     (implicit M: Monoid[L1]): Caio[C1, V1, L1, B] =
     bracketCase(use){ case (a, _) => release(a) }
 
-  def bracketCase[C1 <: C, V1 >: V, L1 >: L, A1 >: A, B]
+  final def bracketCase[C1 <: C, V1 >: V, L1 >: L, A1 >: A, B]
     (use: A1 => Caio[C1, V1, L1, B])
-    (release: (A1, ExitCase[Throwable]) => Caio[C1, V1, L1, Unit])
-    (implicit M: Monoid[L1]): Caio[C1, V1, L1, B] = {
+    (release: (A1, OutcomeCaio[C1, V1, L1, B]) => Caio[C1, V1, L1, Unit])
+    (implicit M: Monoid[L1]): Caio[C1, V1, L1, B] =
+    CaioMonadCancel[C1, V1, L1].bracketCase(this)(use)(release)
 
-    case class CaptureError(c: C1, cause: Throwable) extends Throwable
+  final def both[C1 <: C, V1 >: V, L1 >: L: Monoid, B](other: => Caio[C1, V1, L1, B]): Caio[C1, V1, L1, (A, B)] =
+    CaioAsync[C1, V1, L1].both(this, other)
 
-    KleisliCaio[C1, V1, L1, B] { case (c, ref) =>
-      Bracket[IO, Throwable].bracketCase[FoldCaioPure[C1, V1, L1, A1], FoldCaioPure[C1, V1, L1, B]](Caio.foldIO(this, c, ref)) {
-        case FoldCaioSuccess(acquireC, _, a) =>
-          Caio.foldIO(use(a), acquireC, ref).flatMap {
-            case FoldCaioSuccess(useC, _, b) =>
-              IO.pure(FoldCaioSuccess[C1, V1, L1, B](useC, M.empty, b))
-            case FoldCaioError(useC, _, ex) =>
-              IO.raiseError(CaptureError(useC, ex))
-            case FoldCaioFailure(useC, _, h, t) =>
-              IO.raiseError(CaptureError(useC, CaioUnhandledFailuresException(NonEmptyList(h, t))))
-          }
-        case failOrError =>
-          IO.pure(failOrError.asInstanceOf[FoldCaioPure[C1, V1, L1, B]])
-      } {
-        case (FoldCaioSuccess(acquireC, _, a), exitCase) =>
-          val (newExitCase, forReleaseC) = exitCase match {
-            case Error(CaptureError(useC, ex)) =>
-              Error(ex) -> useC
-            case ec =>
-              ec -> acquireC
-          }
-          Caio.foldIO(release(a, newExitCase), forReleaseC, ref).flatMap {
-            case FoldCaioError(_, _, ex) =>
-              IO.raiseError(ex)
-            case FoldCaioFailure(_, _, h, t) =>
-              IO.raiseError(CaioUnhandledFailuresException(NonEmptyList(h, t)))
-            case _ =>
-              IO.unit
-          }
-        case _ =>
-          IO.unit
-      }.handleErrorWith {
-        case CaptureError(useC, CaioUnhandledFailuresException(NonEmptyList(head: V, tail: List[V]))) =>
-          IO.pure(FoldCaioFailure(useC, M.empty, head, tail))
-        case CaptureError(useC, ex) =>
-          IO.pure(FoldCaioError(useC, M.empty, ex))
-        case CaioUnhandledFailuresException(NonEmptyList(head: V, tail: List[V])) =>
-          IO.pure(FoldCaioFailure(c, M.empty, head, tail))
-        case ex =>
-          IO.pure(FoldCaioError(c, M.empty, ex))
-      }
-    }
-  }
+  final def censor[L1 >: L](f: L1 => L1): Caio[C, V, L1, A] =
+    Caio.CensorCaio(this, f)
 
-
-  @inline def map[B](f:A => B): Caio[C, V, L, B] =
-    MapCaio(this, f)
-
-  @inline def flatMap[C1 <: C, V1 >: V, L1 >: L, B](f: A => Caio[C1, V1, L1, B]): Caio[C1, V1, L1, B] =
-    BindCaio(this, f)
-
-  @inline def <*[C1 <: C, V1 >: V, L1 >: L](fb: => Caio[C1, V1, L1, Any]): Caio[C1, V1, L1, A] =
-    BindCaio[C1, V1, L1, A, A](this, a => MapCaio[C1, V1, L1, Any, A](fb, _ => a))
-
-  @inline def *>[C1 <: C, V1 >: V, L1 >: L, B](fb: => Caio[C1, V1, L1, B]): Caio[C1, V1, L1, B] =
-    BindCaio[C1, V1, L1, A, B](this, _ => fb)
-
-  @inline def censor[L1 >: L](f: L1 => L1): Caio[C, V, L1, A] =
-    CensorCaio(this, f)
-
-  @inline def clear[L1 >: L](implicit M: Monoid[L1]): Caio[C, V, L1, A] =
+  final def clear[L1 >: L](implicit M: Monoid[L1]): Caio[C, V, L1, A] =
     censor[L1](_ => M.empty)
 
-  def guarantee[C1 <: C, V1 >: V, L1 >: L: Monoid](finalizer: Caio[C1, V1, L1, Unit]): Caio[C1, V1, L1, A] =
-    guaranteeCase(_ => finalizer)
+  final def delayBy[L1 >: L](duration: FiniteDuration)(implicit M: Monoid[L1]): Caio[C, V, L1, A] =
+    sleep[C, V, L1](duration) *> this
 
-  def guaranteeCase[C1 <: C, V1 >: V, L1 >: L: Monoid](finalizer: ExitCase[Throwable] => Caio[C1, V1, L1, Unit]): Caio[C1, V1, L1, A] =
-    new CaioBracket[C1, V1, L1].guaranteeCase(this)(finalizer)
+  final def either: Caio[C, Nothing, L, Either[NonEmptyList[V], A]] =
+    map(Right.apply).handleFailuresWith[C, V, Nothing, L, Either[NonEmptyList[V], A]](fs => Caio.pure(Left(fs)))
 
-  @inline def handleErrorWith[C1 <: C, V1 >: V, L1 >: L, A1 >: A](f: Throwable => Caio[C1, V1, L1, A1]): Caio[C1, V1, L1, A1] =
-    HandleErrorCaio(this, f)
+  final def flatMap[C1 <: C, V1 >: V, L1 >: L, B](f: A => Caio[C1, V1, L1, B]): Caio[C1, V1, L1, B] =
+    Caio.BindCaio(this, f)
 
-  @inline def handleFailuresWith[C1 <: C, V1 >: V, V2, L1 >: L, A1 >: A](f: NonEmptyList[V1] => Caio[C1, V2, L1, A1]): Caio[C1, V2, L1, A1] =
-    HandleFailureCaio(this, f)
+  final def flatten[C1 <: C, V1 >: V, L1 >: L, B](implicit ev: A <:< Caio[C1, V1, L1, B]): Caio[C1, V1, L1, B] =
+    flatMap[C1, V1, L1, B](ev)
 
-  @inline def listen: Caio[C, V, L, (A, L)] =
-    ListenCaio(this)
+  final def forceR[C1 <: C, V1 >: V, L1 >: L, B](other: Caio[C1, V1, L1, B]): Caio[C1, V1, L1, B] =
+    this.either.attempt *> other
 
-  @inline def localContext[C1 <: C](f: C1 => C1): Caio[C1, V, L, A] =
-    LocalContextCaio(this, f)
+  final def foreverM: Caio[C, V, L, Nothing] =
+    CaioMonad[C, V, L].foreverM[A, Nothing](this)
 
-  @inline def either: Caio[C, Nothing, L, Either[NonEmptyList[V], A]] =
-    HandleFailureCaio[C, V, Nothing, L, Either[NonEmptyList[V], A]](
-      MapCaio[C, V, L, A, Either[NonEmptyList[V], A]](this, Right.apply),
-      fs => PureCaio(Left(fs))
-    )
+  final def guarantee[C1 <: C, V1 >: V, L1 >: L: Monoid, A1 >: A](finalizer: Caio[C1, V1, L1, Unit]): Caio[C1, V1, L1, A1] =
+    guaranteeCase[C1, V1, L1, A1](_ => finalizer)
 
-  def race[C1 <: C, V1 >: V, L1 >: L, B](caio: Caio[C1, V1, L1, B])(implicit M: Monoid[L1], CS: ContextShift[IO]): Caio[C1, V1, L1, Either[A, B]] =
-    this.racePair[C1, V1, L1, A, B](caio).flatMap {
-      case Left((a, fiberB))  => fiberB.cancel.map(_ => Left(a))
-      case Right((fiberA, b)) => fiberA.cancel.map(_ => Right(b))
-    }
+  final def guaranteeCase[C1 <: C, V1 >: V, L1 >: L: Monoid, A1 >: A](finalizer: OutcomeCaio[C1, V1, L1, A1] => Caio[C1, V1, L1, Unit]): Caio[C1, V1, L1, A1] =
+    CaioMonadCancel[C1, V1, L1].guaranteeCase[A1](this)(finalizer)
 
-  @inline def racePair[C1 <: C, V1 >: V, L1 >: L, A1 >: A, B]
-    (other: Caio[C1, V1, L1, B])
-    (implicit M: Monoid[L1], CS: ContextShift[IO]): Caio[C1, V1, L1, Either[(A1, Fiber[Caio[C1, V1, L1, *], B]), (Fiber[Caio[C1, V1, L1, *], A1], B)]] =
+  final def handleErrorWith[C1 <: C, V1 >: V, L1 >: L, A2 >: A](f: Throwable => Caio[C1, V1, L1, A2]): Caio[C1, V1, L1, A2] =
+    Caio.HandleErrorCaio[C1, V1, L1, A2](this, { case ex: Throwable => f(ex) })
 
-    KleisliCaio[C1, V1, L1, Either[(A1, Fiber[Caio[C1, V1, L1, *], B]), (Fiber[Caio[C1, V1, L1, *], A1], B)]] { case (c, ref) =>
-      val sa = Caio.foldIO[C1, V1, L1, A1](this, c, ref)
-      val sb = Caio.foldIO[C1, V1, L1, B](other, c, ref)
+  final def handleFailuresWith[C1 <: C, V1 >: V, V2, L1 >: L, A2 >: A](f: NonEmptyList[V1] => Caio[C1, V2, L1, A2]): Caio[C1, V2, L1, A2] =
+    Caio.HandleFailureCaio[C1, V1, V2, L1, A2](this, { case failures: NonEmptyList[V1] => f(failures) })
 
-      IO.racePair(sa, sb).flatMap {
-        case Left((e: FoldCaioError[C1, V1, L1, _], fiberB)) =>
-          fiberB.cancel.map(_ => e)
+  final def handleSomeErrorWith[C1 <: C, V1 >: V, L1 >: L, A1 >: A](f: PartialFunction[Throwable, Caio[C1, V1, L1, A1]]): Caio[C1, V1, L1, A1] =
+    Caio.HandleErrorCaio(this, f)
 
-        case Left((f: FoldCaioFailure[C1, V1, L1, _], fiberB)) =>
-          fiberB.cancel.map(_ => f)
+  final def handleSomeFailuresWith[C1 <: C, V1 >: V, V2, L1 >: L, A2 >: A](f: PartialFunction[NonEmptyList[V1], Caio[C1, V2, L1, A2]]): Caio[C1, V2, L1, A2] =
+    Caio.HandleFailureCaio(this, f)
 
-        case Left((s: FoldCaioSuccess[C1, V1, L1, A1], fiberB)) =>
-          IO(s.map(a => Left(a ->  Fiber(KleisliCaio[C1, V1, L1, B] { case _ => fiberB.join }, IOCaio(fiberB.cancel)))))
+  final def iterateUntil(p: A => Boolean): Caio[C, V, L, A] =
+    CaioMonad[C, V, L].iterateUntil(this)(p)
 
-        case Right((fiberA, e: FoldCaioError[C1, V1, L1, _])) =>
-          fiberA.cancel.map(_ => e)
+  final def iterateWhile(p: A => Boolean): Caio[C, V, L, A] =
+    CaioMonad[C, V, L].iterateWhile(this)(p)
 
-        case Right((fiberA, f: FoldCaioFailure[C1, V1, L1, _])) =>
-          fiberA.cancel.map(_ => f)
+  final def listen: Caio[C, V, L, (A, L)] =
+    Caio.ListenCaio(this)
 
-        case Right((fiberA, s: FoldCaioSuccess[C1, V1, L1, B])) =>
-          IO(s.map(b => Right(Fiber[Caio[C1, V1, L1, *], A1](KleisliCaio[C1, V1, L1, A1] { case _ => fiberA.join }, IOCaio(fiberA.cancel)) -> b)))
+  final def localContext[C1 <: C](f: C1 => C1): Caio[C1, V, L, A] =
+    Caio.LocalContextCaio(this, f)
+
+  final def map[B](f:A => B): Caio[C, V, L, B] =
+    Caio.MapCaio(this, f)
+
+  final def memoize[L1 >: L: Monoid]: Caio[C, V, L1, Caio[C, V, L1, A]] =
+    CaioConcurrent[C, V, L1].memoize(this)
+
+  final def onCancel[C1 <: C, V1 >: V, L1 >: L: Monoid](finalizer: Caio[C1, V1, L1, Unit]): Caio[C1, V1, L1, A] =
+    Caio.getContext[C1].flatMap { c =>
+      Caio.RefIOCaio[L1, A] { ref =>
+        Caio.run(this, c, ref).onCancel(Caio.run(finalizer, c, ref))
       }
     }
 
-  @inline def start[C1 <: C, V1 >: V, L1 >: L, A1 >: A](implicit M: Monoid[L1], CS: ContextShift[IO]): Caio[C1, V1, L1, Fiber[Caio[C1, V1, L1, *], A1]] =
-    KleisliCaio[C1, V1, L1, Fiber[Caio[C1, V1, L1, *], A1]] { case (c, ref) =>
-      Caio.foldIO[C1, V1, L1, A1](this, c, ref).start.map { fiber =>
-        FoldCaioSuccess(c, M.empty, Fiber(
-          KleisliCaio[C1, V1, L1, A1]{ case _ => fiber.join },
-          IOCaio(fiber.cancel)
-        ))
-      }
-    }
+  final def provideContext[L1 >: L](c: C)(implicit M: Monoid[L1]): Caio[Any, V, L1, A] =
+    Caio.RefIOCaio[L1, A](ref => Caio.run[C, V, L1, A](this, c, ref))
 
-  @inline def tapError[C1 <: C, V1 >: V, L1 >: L](f: Throwable => Caio[C1, V1, L1, Any]): Caio[C1, V1, L1, A] =
+  final def race[C1 <: C, V1 >: V, L1 >: L, B](other: Caio[C1, V1, L1, B])(implicit M: Monoid[L1]): Caio[C1, V1, L1, Either[A, B]] =
+    CaioSpawn[C1, V1, L1].race(this, other)
+
+  final def racePair[C1 <: C, V1 >: V, L1 >: L, A1 >: A, B](other: Caio[C1, V1, L1, B])(implicit M: Monoid[L1])
+    : Caio[C1, V1, L1, Either[(OutcomeCaio[C1, V1, L1, A1], FiberCaio[C1, V1, L1, B]), (FiberCaio[C1, V1, L1, A1], OutcomeCaio[C1, V1, L1, B])]] =
+    CaioSpawn[C1, V1, L1].racePair[A1, B](this, other)
+
+  final def redeem[B](recover: Throwable => B, map: A => B): Caio[C, V, L, B] =
+    attempt.map(_.fold(recover, map))
+
+  final def redeemAll[B](recover: Throwable => B, handleFailures: NonEmptyList[V] => B, map: A => B): Caio[C, Nothing, L, B] =
+    redeem(recover, map).handleFailuresWith[C, V, Nothing, L, B](fs => Caio.pure(handleFailures(fs)))
+
+  final def redeemAllWith[C1 <: C, V1 >: V, V2, L1 >: L, B](
+    recover: Throwable => Caio[C1, V1, L1, B],
+    handleFailures: NonEmptyList[V1] => Caio[C1, V2, L1, B],
+    bind: A => Caio[C1, V1, L1, B]
+  ): Caio[C1, V2, L1, B] =
+    redeemWith[C1, V1, L1, B](recover, bind).handleFailuresWith[C1, V1, V2, L1, B](handleFailures)
+
+  final def redeemWith[C1 <: C, V1 >: V, L1 >: L, B](recover: Throwable => Caio[C1, V1, L1, B], bind: A => Caio[C1, V1, L1, B]): Caio[C1, V1, L1, B] =
+    attempt.flatMap(_.fold(recover, bind))
+
+  final def sleep[C1 <: C, V1 >: V, L1 >: L](duration: FiniteDuration)(implicit M: Monoid[L1]): Caio[C1, V1, L1, Unit] =
+     CaioTemporal[C1, V1, L1].sleep(duration)
+
+  final def start[C1 <: C, V1 >: V, L1 >: L, A1 >: A](implicit M: Monoid[L1]): Caio[C1, V1, L1, FiberCaio[C1, V1, L1, A1]] =
+    CaioSpawn[C1, V1, L1].start[A1](this)
+
+  final def tapError[C1 <: C, V1 >: V, L1 >: L](f: Throwable => Caio[C1, V1, L1, Any]): Caio[C1, V1, L1, A] =
     handleErrorWith(ex => f(ex) *> Caio.raiseError(ex))
 
-  @inline def tapFailures[C1 <: C, V1 >: V, L1 >: L](f: NonEmptyList[V1] => Caio[C1, V1, L1, Any]): Caio[C1, V1, L1, A] =
+  final def tapFailures[C1 <: C, V1 >: V, L1 >: L](f: NonEmptyList[V1] => Caio[C1, V1, L1, Any]): Caio[C1, V1, L1, A] =
     handleFailuresWith[C1, V1, V1, L1, A](fs => f(fs) *> Caio.failMany(fs))
 
-  def timeoutTo[C1 <: C, V1 >: V, L1 >: L, A1 >: A]
-    (duration: FiniteDuration, fallback: Caio[C1, V1, L1, A1])
-    (implicit M: Monoid[L1], timer: Timer[Caio[C1, V1, L1, *]], CS: ContextShift[IO]): Caio[C1, V1, L1, A1] =
-    Concurrent.timeoutTo[Caio[C1, V1, L1, *], A1](this, duration, fallback)(new CaioConcurrent[C1, V1, L1], timer)
+  final def timeoutTo[C1 <: C, V1 >: V, L1 >: L, A1 >: A](duration: FiniteDuration, fallback: Caio[C1, V1, L1, A1])(implicit M: Monoid[L1]): Caio[C1, V1, L1, A1] =
+    CaioTemporal[C1, V1, L1].timeoutTo(this, duration, fallback)
 
-  def timeout[C1 <: C, V1 >: V, L1 >: L]
-    (duration: FiniteDuration)
-    (implicit M: Monoid[L1], timer: Timer[Caio[C1, V1, L1, *]], CS: ContextShift[IO]): Caio[C1, V1, L1, A] =
-    timeoutTo[C1, V1, L1, A](duration, ErrorCaio(new TimeoutException(duration.toString)))
+  final def timeout[C1 <: C, V1 >: V, L1 >: L](duration: FiniteDuration)(implicit M: Monoid[L1]): Caio[C1, V1, L1, A] =
+    CaioTemporal[C1, V1, L1].timeout(this, duration)
 
-  @inline def void: Caio[C, V, L, Unit] =
+  final def timed: Caio[C, V, L, (FiniteDuration, A)] =
+    CaioClock[C, V, L].timed(this)
+
+  final def uncancelable[L1 >: L: Monoid]: Caio[C, V, L1, A] =
+    Caio.uncancelable[C, V, L1, A](_ => this)
+
+  final def void: Caio[C, V, L, Unit] =
     as(())
 
   /**
@@ -197,256 +182,175 @@ sealed trait Caio[-C, +V, +L, +A] {
    * @param M
    * @return
    */
-  def run[L1 >: L](c: C)(implicit M: Monoid[L1]): IO[A] =
+  final def run[L1 >: L](c: C)(implicit M: Monoid[L1]): IO[A] =
     Caio.run[C, V, L1, A](this, c, Ref.unsafe[IO, L1](M.empty))
 
-  def run[C1 <: C, L1 >: L](implicit M: Monoid[L1], ev: C1 =:= Any): IO[A] =
+  final def run[C1 <: C, L1 >: L](implicit M: Monoid[L1], ev: C1 =:= Any): IO[A] =
     Caio.run[Any, V, L1, A](this.asInstanceOf[Caio[Any, V, L1, A]], (), Ref.unsafe[IO, L1](M.empty))
 
-  def runFail[L1 >: L](c: C)(implicit M: Monoid[L1]): IO[Either[NonEmptyList[V], A]] =
+  final def runFail[L1 >: L](c: C)(implicit M: Monoid[L1]): IO[Either[NonEmptyList[V], A]] =
     Caio.runFail[C, V, L1, A](this, c, Ref.unsafe[IO, L1](M.empty))
 
-  def runFail[C1 <: C, L1 >: L](implicit M: Monoid[L1], ev: C1 =:= Any): IO[Either[NonEmptyList[V], A]] =
+  final def runFail[C1 <: C, L1 >: L](implicit M: Monoid[L1], ev: C1 =:= Any): IO[Either[NonEmptyList[V], A]] =
     Caio.runFail[Any, V, L1, A](this.asInstanceOf[Caio[Any, V, L1, A]], (), Ref.unsafe[IO, L1](M.empty))
 
-  def runContext[C1 <: C, V1 >: V, L1 >: L](c: C1)(implicit M: Monoid[L1]): IO[(C1, L1, Either[ErrorOrFailure[V1], A])] =
+  final def runContext[C1 <: C, V1 >: V, L1 >: L](c: C1)(implicit M: Monoid[L1]): IO[(C1, L1, Either[ErrorOrFailure[V1], A])] =
     Caio.foldIO[C1, V, L1, A](this, c, Ref.unsafe[IO, L1](M.empty)).map {
       case FoldCaioSuccess(cOut, l, a) =>
         (cOut, l, Right(a))
       case FoldCaioFailure(cOut, l, head, tail) =>
         (cOut, l, Left(Right(NonEmptyList(head, tail))))
+      case FoldCaioError(cOut, l, ex: CaioUnhandledFailuresException[V]) =>
+        (cOut, l, Left(Right(ex.failure)))
       case FoldCaioError(cOut, l, ex) =>
         (cOut, l, Left(Left(ex)))
     }
-
-  @inline def provideContext[L1 >: L](c: C)(implicit M: Monoid[L1]): Caio[Any, V, L1, A] =
-    RefIOCaio[L1, A](ref => Caio.run[C, V, L1, A](this, c, ref))
 }
-
-final private[caio] case class PureCaio[+A](a: A) extends Caio[Any, Nothing, Nothing, A]
-
-final private[caio] class IOCaio[+A] private(val f: () => IO[A]) extends Caio[Any, Nothing, Nothing, A]
-
-object IOCaio {
-  def apply[A](a: => IO[A]) = new IOCaio(() => a)
-  def unapply[A](io: IOCaio[A]): Option[() => IO[A]] = Some(io.f)
-}
-
-final private[caio] case class RefIOCaio[L, +A](f: Ref[IO, L] => IO[A]) extends Caio[Any, Nothing, L, A]
-
-final private[caio] case class KleisliCaio[C, V, L, +A](kleisli: (C, Ref[IO, L]) => IO[FoldCaioPure[C, V, L, A]]) extends Caio[C, V, L, A]
-
-final private[caio] case class MapCaio[-C, +V, +L, E, +A](source: Caio[C, V, L, E], f: E => A) extends Caio[C, V, L, A]
-
-final private[caio] case class BindCaio[-C, +V, +L, E, +A](source: Caio[C, V, L, E], f: E => Caio[C, V, L, A]) extends Caio[C, V, L, A]
-
-final private[caio] case class ErrorCaio(e: Throwable) extends Caio[Any, Nothing, Nothing, Nothing]
-
-final private[caio] case class HandleErrorCaio[-C, +V, +L, +A](source: Caio[C, V, L, A], f: Throwable => Caio[C, V, L, A]) extends Caio[C, V, L, A]
-
-final private[caio] case class FailureCaio[+V](head: V, tail: List[V]) extends Caio[Any, V, Nothing, Nothing]
-
-final private[caio] case class HandleFailureCaio[-C, V, V1, +L, +A](source: Caio[C, V, L, A], f: NonEmptyList[V] => Caio[C, V1, L, A]) extends Caio[C, V1, L, A]
-
-final private[caio] case class TellCaio[+L](l: L) extends Caio[Any, Nothing, L, Unit]
-
-final private[caio] case class ListenCaio[-C, +V, +L, +A](source: Caio[C, V, L, A]) extends Caio[C, V, L, (A, L)]
-
-final private[caio] case class CensorCaio[-C, +V, L, +A](source: Caio[C, V, L, A], f: L => L) extends Caio[C, V, L, A]
-
-final private[caio] case class GetContextCaio[C]() extends Caio[C, Nothing, Nothing, C]
-
-final private[caio] case class SetContextCaio[C](c: C) extends Caio[C, Nothing, Nothing, Unit]
-
-final private[caio] case class LocalContextCaio[C, V, L, A](source: Caio[C, V, L, A], f: C => C) extends Caio[C, V, L, A]
 
 case class CaioUnhandledFailuresException[V](failure: NonEmptyList[V])
   extends Exception("Caio failures have not been handled.")
 
-sealed trait FoldCaio[C, V, L, +A] {
-
-  /**
-   * Required for transforming context outside of the evaluation GADT
-   * Can transform Error and Failed cases as well
-   * @param f
-   * @tparam C2
-   * @return
-   */
-  def contextMap[C2](f: C => C2): FoldCaio[C2, V, L, A]
-
-  def flatMap[B](f: (C, L, A) => FoldCaio[C, V, L, B]): FoldCaio[C, V, L, B]
-
-  def toIO:IO[FoldCaioPure[C, V, L, A]]
-
-  def map[B](f: A => B): FoldCaio[C, V, L, B]
-
-  /**
-   * Required for transforming EventLog, cant use FlatMap
-   * Can transform Error and Failed cases as well
-   * @param f
-   * @return
-   */
-  def mapL[B](f: L => L): FoldCaio[C, V, L, A]
-}
-
-sealed trait FoldCaioPure[C, V, L, +A] extends FoldCaio[C, V, L, A] {
-
-  def c: C
-
-  def l: L
-
-  def contextMap[C2](f: C => C2): FoldCaioPure[C2, V, L, A]
-
-  def map[B](f:A => B): FoldCaioPure[C, V, L, B]
-
-  def flatMap[B](f: (C, L, A) => FoldCaio[C, V, L, B]): FoldCaio[C, V, L, B]
-
-  def toIO: IO[FoldCaioPure[C, V, L, A]] =
-    IO.pure(this)
-
-  def mapL[B](f: L => L): FoldCaioPure[C, V, L, A]
-}
-
-final private[caio] case class FoldCaioSuccess[C, V, L, +A](c: C, l: L, a: A) extends FoldCaioPure[C, V, L, A] {
-
-  def contextMap[C2](f: C => C2): FoldCaioPure[C2, V, L, A] =
-    this.copy(c = f(this.c))
-
-  def map[B](f:A => B): FoldCaioPure[C, V, L, B] =
-    this.copy(a = f(a))
-
-  def flatMap[B](f: (C, L, A) => FoldCaio[C, V, L, B]): FoldCaio[C, V, L, B] =
-    f(c, l, a)
-
-  def mapL[B](f: L => L): FoldCaioPure[C, V, L, A] =
-    this.copy(l = f(l))
-}
-final private[caio] case class FoldCaioFailure[C, V, L, +A](c: C, l: L, head: V, tail: List[V]) extends FoldCaioPure[C, V, L, Nothing] {
-
-  def contextMap[C2](f: C => C2): FoldCaioPure[C2, V, L, Nothing] =
-    this.copy(c = f(this.c))
-
-
-  def map[B](f: Nothing => B): FoldCaioPure[C, V, L, B] =
-    this
-
-  def flatMap[B](f: (C, L, Nothing) => FoldCaio[C, V, L, B]): FoldCaio[C, V, L, B] =
-    this
-
-  def mapL[B](f: L => L): FoldCaioPure[C, V, L, Nothing] =
-    this.copy(l = f(l))
-}
-final private[caio] case class FoldCaioError[C, V, L, +A](c: C, l: L, e: Throwable) extends FoldCaioPure[C, V, L, Nothing] {
-
-  def contextMap[C2](f: C => C2): FoldCaioPure[C2, V, L, Nothing] =
-    this.copy(c = f(this.c))
-
-  def map[B](f: Nothing => B): FoldCaioPure[C, V, L, B] =
-    this
-
-  def flatMap[B](f: (C, L, Nothing) => FoldCaio[C, V, L, B]): FoldCaio[C, V, L, B] =
-    this
-
-  def mapL[B](f: L => L): FoldCaioPure[C, V, L, Nothing] =
-    this.copy(l = f(l))
-}
-final private[caio] case class FoldCaioIO[C, V, L, +A](io: IO[FoldCaioPure[C, V, L, A]]) extends FoldCaio[C, V, L, A] {
-
-  def contextMap[C2](f: C => C2): FoldCaioIO[C2, V, L, A] =
-    FoldCaioIO[C2, V, L, A](io.map(_.contextMap(f)))
-
-  def flatMap[B](f: (C, L, A) => FoldCaio[C, V, L, B]): FoldCaio[C, V, L, B] = {
-    val ioflatmap = io.flatMap(_.flatMap(f) match {
-      case FoldCaioIO(io2) =>
-        io2
-      case p:FoldCaioPure[C, V, L, B] =>
-        IO.pure(p)
-    })
-    FoldCaioIO(ioflatmap)
-  }
-
-  def map[B](f: A => B): FoldCaio[C, V, L, B] =
-    FoldCaioIO(io.map(_.map(f)))
-
-  def mapL[B](f: L => L): FoldCaio[C, V, L, A] =
-    FoldCaioIO(io.map(_.mapL(f)))
-
-  def toIO: IO[FoldCaioPure[C, V, L, A]] =
-    io
-}
-
 object Caio {
-  @inline def apply[A](thunk: => A): Caio[Any, Nothing, Nothing, A] =
+  type Par[C, V, L, A] = ParallelF[Caio[C, V, L, *], A]
+
+  def apply[A](thunk: => A): Caio[Any, Nothing, Nothing, A] =
     IOCaio[A](IO.apply(thunk))
 
-  @inline def async[A](k: (Either[Throwable, A] => Unit) => Unit): Caio[Any, Nothing, Nothing, A] =
-    IOCaio(IO.async(k))
+  def async[C, V, L: Monoid, A](k: (Either[Throwable, A] => Unit) => Caio[C, V, L, Option[Caio[C, V, L, Unit]]]): Caio[C, V, L, A] =
+    CaioAsync[C, V, L].async[A](k)
 
-  @inline def asyncF[C, V, L: Monoid, A](k: (Either[Throwable, A] => Unit) => Caio[C, V, L, Unit]): Caio[C, V, L, A] =
-    KleisliCaio[C, V, L, A] { case (c, ref) =>
-      val k2 = k.andThen { c0 => Caio.foldIO(c0, c, ref).map(_ => ()) }
-      IO.asyncF(k2).map(a => FoldCaioSuccess[C, V, L, A](c, Monoid[L].empty, a))
-    }
+  def async_[C, V, L: Monoid, A](k: (Either[Throwable, A] => Unit) => Unit): Caio[C, V, L, A] =
+    CaioAsync[C, V, L].async_[A](k)
 
-  @inline def unit: Caio[Any, Nothing, Nothing, Unit] =
-    pure(())
+  def both[C, V, L: Monoid, A, B](`this`: Caio[C, V, L, A], that: Caio[C, V, L, B]): Caio[C, V, L, (A, B)] =
+    `this`.both(that)
 
-  @inline def pure[A](a: A): Caio[Any, Nothing, Nothing, A] =
-    PureCaio(a)
+  def deferred[C, V, L: Monoid, A]: Caio[C, Nothing, Nothing, Deferred[Caio[C, V, L, *], A]] =
+    effect(Deferred.unsafe[Caio[C, V, L, *], A])
 
-  @inline def effect[A](thunk: => A): Caio[Any, Nothing, Nothing, A] =
+  def effect[A](thunk: => A): Caio[Any, Nothing, Nothing, A] =
     apply(thunk)
 
-  @inline def raiseError(ex: Throwable): Caio[Any, Nothing, Nothing, Nothing] =
-    ErrorCaio(ex)
-
-  @inline def fail[V](failure: V, failures: V*): Caio[Any, V, Nothing,  Nothing] =
+  def fail[V](failure: V, failures: V*): Caio[Any, V, Nothing,  Nothing] =
     FailureCaio(failure, failures.toList)
 
-  @inline def failMany[V](failures: NonEmptyList[V]): Caio[Any, V, Nothing,  Nothing] =
+  def failMany[V](failures: NonEmptyList[V]): Caio[Any, V, Nothing,  Nothing] =
     FailureCaio(failures.head, failures.tail)
 
-  @inline def fromEither[A](either: => Either[Throwable, A]): Caio[Any, Nothing, Nothing, A] =
+  def fromEither[A](either: => Either[Throwable, A]): Caio[Any, Nothing, Nothing, A] =
     IOCaio(IO.fromEither(either))
 
-  @inline def fromEitherFailure[V, A](either: => Either[V, A]): Caio[Any, V, Nothing, A] =
-    Try(either).fold(ErrorCaio(_), _.fold(FailureCaio(_, Nil), PureCaio(_)))
+  def fromEitherFailure[V, A](either: => Either[V, A]): Caio[Any, V, Nothing, A] =
+    fromTry(Try(either)).flatMap(_.fold(FailureCaio(_, Nil), PureCaio(_)))
 
-  def fromFuture[C, V, L, A](caio: Caio[C, V, L, Future[A]])(implicit CS: ContextShift[IO]): Caio[C, V, L, A] =
+  def fromFuture[C, V, L, A](caio: Caio[C, V, L, Future[A]]): Caio[C, V, L, A] =
     caio.flatMap(future => IOCaio(IO.fromFuture(IO(future))))
 
-  @inline def fromIOFuture[A](iof: IO[Future[A]])(implicit CS: ContextShift[IO]): Caio[Any, Nothing, Nothing, A] =
+  def fromIOFuture[A](iof: IO[Future[A]]): Caio[Any, Nothing, Nothing, A] =
     IOCaio(IO.fromFuture(iof))
 
-  @inline def fromTry[A](`try`: Try[A]): Caio[Any, Nothing, Nothing, A] =
+  def fromTry[A](`try`: Try[A]): Caio[Any, Nothing, Nothing, A] =
     IOCaio(IO.fromTry(`try`))
 
-  @inline def getContext[C]: Caio[C, Nothing, Nothing, C] =
+  def getContext[C]: Caio[C, Nothing, Nothing, C] =
     GetContextCaio()
 
-  @inline def liftIO[A](io: IO[A]): Caio[Any, Nothing, Nothing, A] =
+  def liftIO[A](io: => IO[A]): Caio[Any, Nothing, Nothing, A] =
     IOCaio(io)
 
-  @inline def liftF[F[_]: ConcurrentEffect, A](fa: F[A]): Caio[Any, Nothing, Nothing, A] =
-    IOCaio(ConcurrentEffect[F].toIO(fa))
-
-  @inline def modifyContext[C](f: C => C): Caio[C, Nothing, Nothing, Unit] =
+  def modifyContext[C](f: C => C): Caio[C, Nothing, Nothing, Unit] =
     getContext[C].flatMap(c => setContext(f(c)))
 
-  @inline def never: Caio[Any, Nothing, Nothing, Nothing] =
-    async(_ => ())
+  def never[A]: Caio[Any, Nothing, Nothing, A] =
+    IOCaio(IO.never[A])
 
-  @inline def setContext[C](context: C): Caio[C, Nothing, Nothing, Unit] =
-    SetContextCaio(context)
+  def none[A]: Caio[Any, Nothing, Nothing, Option[A]] =
+    pure(None)
 
-  def race[C, V, L, A, B](fa: Caio[C, V, L, A], fb: Caio[C, V, L, B])(implicit M: Monoid[L], CS: ContextShift[IO]): Caio[C, V, L, Either[A, B]] =
+  def parTraverseN[C, V, L: Monoid, T[_]: Traverse, A, B](n: Int)(ta: T[A])(f: A => Caio[C, V, L, B]): Caio[C, V, L, T[B]] =
+    asyncForCaio[C, V, L].parTraverseN(n)(ta)(f)
+
+  def parSequenceN[C, V, L: Monoid, T[_]: Traverse, A](n: Int)(tma: T[Caio[C, V, L, A]]): Caio[C, V, L, T[A]] =
+    asyncForCaio[C, V, L].parSequenceN(n)(tma)
+
+  def pure[A](a: A): Caio[Any, Nothing, Nothing, A] =
+    PureCaio(a)
+
+  def raiseError(ex: Throwable): Caio[Any, Nothing, Nothing, Nothing] =
+    ErrorCaio(ex)
+
+  def race[C, V, L: Monoid, A, B](fa: Caio[C, V, L, A], fb: Caio[C, V, L, B]): Caio[C, V, L, Either[A, B]] =
     fa.race(fb)
 
-  def sleep[C, V, L](duration: FiniteDuration)(implicit timer: Timer[Caio[C, V, L, *]]): Caio[C, V, L, Unit] =
-    timer.sleep(duration)
+  def setContext[C](context: C): Caio[C, Nothing, Nothing, Unit] =
+    SetContextCaio(context)
 
-  @inline def tell[L](l: L):Caio[Any, Nothing, L, Unit] =
+  def sequence[C, V, L, T[_]: Traverse, A](tma: T[Caio[C, V, L, A]]): Caio[C, V, L, T[A]] =
+    Traverse[T].sequence(tma)(CaioApplicative[C, V, L])
+
+  def sleep[C, V, L: Monoid](duration: FiniteDuration): Caio[C, V, L, Unit] =
+    CaioTemporal[C, V, L].sleep(duration)
+
+  def some[A](a: A): Caio[Any, Nothing, Nothing, Option[A]] =
+    pure(Some(a))
+
+  def tell[L](l: L):Caio[Any, Nothing, L, Unit] =
     TellCaio[L](l)
+
+  def traverse[C, V, L, T[_]: Traverse, A, B](ta: T[A])(f: A => Caio[C, V, L, B]): Caio[C, V, L, T[B]] =
+    Traverse[T].traverse(ta)(f)(CaioApplicative[C, V, L])
+
+  def uncancelable[C, V, L: Monoid, A](body: Poll[Caio[C, V, L, *]] => Caio[C, V, L, A]): Caio[C, V, L, A] =
+    GetContextCaio[C]().flatMap { c =>
+      RefIOCaio[L, A] { ref =>
+        IO.uncancelable { poll =>
+          val newPoll = new Poll[Caio[C, V, L, *]] {
+            def apply[X](fa: Caio[C, V, L, X]): Caio[C, V , L, X] =
+              KleisliCaio[C, V, L, X] { case (cc, _) =>
+                poll(foldIO(fa, cc, ref))
+              }
+          }
+
+          run(body(newPoll), c, ref)
+        }
+      }
+    }
+
+  def unit: Caio[Any, Nothing, Nothing, Unit] =
+    pure(())
+
+  implicit def alignForCaio[C, V, L]: Align[Caio[C, V, L, *]] =
+    new Align[Caio[C, V, L, *]] {
+      def functor: Functor[Caio[C, V, L, *]] =
+        CaioFunctor[C, V, L]
+
+      def align[A, B](fa: Caio[C,V,L,A], fb: Caio[C, V, L, B]): Caio[C, V, L, Ior[A, B]] =
+        fa.redeemWith(
+          t => fb.redeemWith(_ => raiseError(t), b => pure(Ior.right(b))),
+          a => fb.redeem(_ => Ior.left(a), b => Ior.both(a, b))
+        )
+    }
+
+  implicit def asyncForCaio[C, V, L: Monoid]: Async[Caio[C, V, L, *]] =
+    CaioAsync[C, V, L]
+
+  implicit def monoidForCaio[C, V, L, A](implicit M: Monoid[A]): Monoid[Caio[C, V, L, A]] =
+    new Monoid[Caio[C, V, L, A]] {
+      def combine(left: Caio[C, V, L, A], right: Caio[C, V, L, A]): Caio[C, V, L, A] =
+        left.flatMap(l => right.map(r => M.combine(l, r)))
+
+      def empty: Caio[C, V, L, A] =
+        Caio.pure(M.empty)
+    }
+
+  implicit def parallelForCaio[C, V, L: Monoid]: Parallel.Aux[Caio[C, V, L, *], Par[C, V, L, *]] =
+    cats.effect.instances.spawn.parallelForGenSpawn[Caio[C, V, L, *], Throwable]
+
+  implicit def semigroupKForIO[C, V, L]: SemigroupK[Caio[C, V, L, *]] =
+    new SemigroupK[Caio[C, V, L, *]] {
+      final override def combineK[A](a: Caio[C, V, L, A], b: Caio[C, V, L, A]): Caio[C, V, L, A] =
+        a.handleErrorWith(_ => b)
+    }
 
   private[caio] def run[C, V, L: Monoid, A](caio: Caio[C, V, L, A], c: C, ref: Ref[IO, L]): IO[A] =
     foldIO[C, V, L, A](caio, c, ref).map {
@@ -464,6 +368,8 @@ object Caio {
         Right(a)
       case FoldCaioFailure(_, _, head, tail) =>
         Left(NonEmptyList(head, tail))
+      case FoldCaioError(_, _, ex: CaioUnhandledFailuresException[V @unchecked]) =>
+        Left(ex.failure)
       case FoldCaioError(_, _, ex) =>
         throw ex
     }
@@ -524,9 +430,9 @@ object Caio {
                 FoldCaioIO(ref.get.map(l => FoldCaioSuccess(c, l, a)))
             }
 
-          case IOCaio(io) =>
+          case caio: IOCaio[_] =>
             //The IO monad will bring this back into stack safety
-            FoldCaioIO(io().redeemWith(
+            FoldCaioIO(caio.f().redeemWith(
               e => safeFold(ErrorCaio(e), c, handlers).toIO,
               a => safeFold(PureCaio(a), c, handlers).toIO
             ))
@@ -572,7 +478,7 @@ object Caio {
             }
 
           case HandleErrorCaio(source, f) =>
-            foldCaio(source, c, OnError((_, e) => f(e)) :: handlers)
+            foldCaio(source, c, OnError((_, e) => if (f.isDefinedAt(e)) f(e) else ErrorCaio(e)) :: handlers)
 
           case FailureCaio(head, tail) =>
             nextFailureHandler(handlers) match {
@@ -583,7 +489,17 @@ object Caio {
             }
 
           case HandleFailureCaio(source, f) =>
-            foldCaio(source, c, OnFailure((_, e) => f(e)) :: handlers)
+            foldCaio(source, c,
+              OnError((_, e) =>
+                if (e.isInstanceOf[CaioUnhandledFailuresException[Any @unchecked]]) {
+                  val NonEmptyList(head, tail) = e.asInstanceOf[CaioUnhandledFailuresException[Any]].failure
+                  FailureCaio(head, tail)
+                } else
+                  ErrorCaio(e)
+              ) ::
+              OnFailure((_, e) => if (f.isDefinedAt(e)) f(e) else FailureCaio(e.head, e.tail)) ::
+              handlers
+            )
 
           case TellCaio(l2) =>
             foldCaio(IOCaio(ref.update(l => M.combine(l.asInstanceOf[L], l2.asInstanceOf[L]))), c, handlers)
@@ -612,6 +528,43 @@ object Caio {
       foldCaio(caio, c, handlers)
     }
 
-    IO.suspend(safeFold(caio.asInstanceOf[Caio[Any, Any, Any, Any]], c, Nil).asInstanceOf[FoldCaio[C, V, L, A]].toIO)
+    IO.defer(safeFold(caio.asInstanceOf[Caio[Any, Any, Any, Any]], c, Nil).asInstanceOf[FoldCaio[C, V, L, A]].toIO)
   }
+
+  final private case class PureCaio[+A](a: A) extends Caio[Any, Nothing, Nothing, A]
+
+  final private class IOCaio[+A] private(val f: () => IO[A]) extends Caio[Any, Nothing, Nothing, A]
+
+  private object IOCaio {
+    def apply[A](a: => IO[A]) = new IOCaio(() => a)
+    def unapply[A](io: IOCaio[A]): Option[() => IO[A]] = Some(io.f)
+  }
+
+  final private[caio] case class RefIOCaio[L, +A](f: Ref[IO, L] => IO[A]) extends Caio[Any, Nothing, L, A]
+
+  final private[caio] case class KleisliCaio[C, V, L, +A](kleisli: (C, Ref[IO, L]) => IO[FoldCaioPure[C, V, L, A]]) extends Caio[C, V, L, A]
+
+  final private case class MapCaio[-C, +V, +L, E, +A](source: Caio[C, V, L, E], f: E => A) extends Caio[C, V, L, A]
+
+  final private case class BindCaio[-C, +V, +L, E, +A](source: Caio[C, V, L, E], f: E => Caio[C, V, L, A]) extends Caio[C, V, L, A]
+
+  final private case class ErrorCaio(e: Throwable) extends Caio[Any, Nothing, Nothing, Nothing]
+
+  final private case class HandleErrorCaio[-C, +V, +L, +A](source: Caio[C, V, L, A], f: PartialFunction[Throwable, Caio[C, V, L, A]]) extends Caio[C, V, L, A]
+
+  final private case class FailureCaio[+V](head: V, tail: List[V]) extends Caio[Any, V, Nothing, Nothing]
+
+  final private case class HandleFailureCaio[-C, V, V1, +L, +A](source: Caio[C, V, L, A], f: PartialFunction[NonEmptyList[V], Caio[C, V1, L, A]]) extends Caio[C, V1, L, A]
+
+  final private case class TellCaio[+L](l: L) extends Caio[Any, Nothing, L, Unit]
+
+  final private case class ListenCaio[-C, +V, +L, +A](source: Caio[C, V, L, A]) extends Caio[C, V, L, (A, L)]
+
+  final private case class CensorCaio[-C, +V, L, +A](source: Caio[C, V, L, A], f: L => L) extends Caio[C, V, L, A]
+
+  final private case class GetContextCaio[C]() extends Caio[C, Nothing, Nothing, C]
+
+  final private case class SetContextCaio[C](c: C) extends Caio[C, Nothing, Nothing, Unit]
+
+  final private case class LocalContextCaio[C, V, L, A](source: Caio[C, V, L, A], f: C => C) extends Caio[C, V, L, A]
 }

@@ -1,7 +1,6 @@
 package caio
 
 import caio.Event.EventLog
-import caio.std.Par
 import cats.Monoid
 import org.scalacheck.{Arbitrary, Cogen, Gen}
 import org.scalacheck.Arbitrary.{arbitrary => getArbitrary}
@@ -12,9 +11,6 @@ package object arbitrary {
   implicit def arbitraryForCaio[C: Arbitrary, V: Arbitrary, L: Arbitrary: Monoid, A: Arbitrary: Cogen]: Arbitrary[Caio[C, V, L, A]] =
     Arbitrary(Gen.delay(genCaio[C, V, L, A]))
 
-  implicit def arbitraryForParCaio[C: Arbitrary, V: Arbitrary, L: Arbitrary: Monoid, A: Arbitrary: Cogen]: Arbitrary[ParCaio[C, V, L, A]] =
-    Arbitrary(arbitraryForCaio[C, V, L, A].arbitrary.map(Par.apply))
-
   def genCaio[C: Arbitrary, V: Arbitrary, L: Arbitrary: Monoid, A: Arbitrary: Cogen]: Gen[Caio[C, V, L, A]] =
     Gen.frequency(
       1 -> genPure[C, V, L, A],
@@ -22,7 +18,6 @@ package object arbitrary {
       1 -> genError[C, V, L, A],
       1 -> genFail[C, V, L, A],
       1 -> genAsync[C, V, L, A],
-      1 -> genAsyncF[C, V, L, A],
       1 -> genNestedAsync[C, V, L, A],
       1 -> genTell[C, V, L, A],
       1 -> genContext[C, V, L, A],
@@ -43,13 +38,8 @@ package object arbitrary {
   def genFail[C, V: Arbitrary, L, A]: Gen[Caio[C, V, L, A]] =
     getArbitrary[V].map(Caio.fail(_))
 
-  def genAsync[C, V, L, A: Arbitrary]: Gen[Caio[C, V, L, A]] =
-    getArbitrary[(Either[Throwable, A] => Unit) => Unit].map(Caio.async)
-
-  def genAsyncF[C, V, L: Monoid, A: Arbitrary]: Gen[Caio[C, V, L, A]] =
-    getArbitrary[(Either[Throwable, A] => Unit) => Unit].map { k =>
-      Caio.asyncF[C, V, L, A](cb => Caio(k(cb)))
-    }
+  def genAsync[C, V, L: Monoid, A: Arbitrary]: Gen[Caio[C, V, L, A]] =
+    getArbitrary[(Either[Throwable, A] => Unit) => Unit].map(Caio.async_[C, V, L, A])
 
   def genTell[C, V, L: Arbitrary, A: Arbitrary]: Gen[Caio[C, V, L, A]] =
     getArbitrary[L].flatMap(l => genPure[C, V, L, A].map(Caio.tell(l) *> _))
@@ -59,7 +49,7 @@ package object arbitrary {
 
   def genNestedAsync[C: Arbitrary, V: Arbitrary, L: Arbitrary: Monoid, A: Arbitrary: Cogen]: Gen[Caio[C, V, L, A]] =
     getArbitrary[(Either[Throwable, Caio[C, V, L, A]] => Unit) => Unit]
-      .map(k => Caio.async(k).flatMap(x => x))
+      .map(k => Caio.async_(k).flatMap(x => x))
 
   def genBindSuspend[C, V, L, A: Arbitrary: Cogen]: Gen[Caio[C, V, L, A]] =
     getArbitrary[A].map(Caio.apply(_).flatMap(Caio.pure))

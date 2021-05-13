@@ -2,15 +2,12 @@ package caio
 
 import caio.implicits.{DynamicContextImplicits, StaticImplicits}
 import caio.mtl.{ApplicativeFail, InvariantAsk}
-import cats.effect.concurrent.Deferred
-import cats.effect.{ContextShift, IO, LiftIO, Sync}
+import cats.effect.{IO, LiftIO, Sync}
 
-import scala.concurrent.ExecutionContext
-import caio.std.{CaioApplicative, CaioApplicativeFail, CaioListen}
+import caio.std.{CaioApplicative, CaioDispatcher, CaioApplicativeFail, CaioListen}
 import cats.data.NonEmptyList
 import cats.mtl.{Listen, Tell}
 import cats.Applicative
-import cats.syntax.ApplicativeErrorOps
 import org.scalatest.{AsyncFunSpec, Matchers}
 
 class CaioTests extends AsyncFunSpec with Matchers {
@@ -23,14 +20,14 @@ class CaioTests extends AsyncFunSpec with Matchers {
 
   type CaioT[A] = Caio[C, V, L, A]
 
-  implicit val CS: ContextShift[IO] = IO.contextShift(ExecutionContext.global)
   type CaioC[C1, A] = Caio[C1, V, L, A]
   type CaioV[V1, A] = Caio[C, V1, L, A]
   type CaioL[L1, A] = Caio[C, V, L1, A]
 
-
   val implicits = new DynamicContextImplicits[V, L]
-  import implicits._
+  import implicits.{dynamicCaioAsync, dynamicLiftIO, dynamicCaioApplicativeFail, dynamicCaioAsk}
+
+  val dispatcher = CaioDispatcher.unsafe[C, V, L](Map.empty)((_, _) => IO.unit)((_, _, _) => IO.unit)((_, _, _) => IO.unit)
 
   /*val emptyState:Store[C, L] =
     EmptyStore
@@ -53,7 +50,7 @@ class CaioTests extends AsyncFunSpec with Matchers {
         } else
           Applicative[CaioT].pure(n)
 
-      summation(1000000).run(Map.empty).unsafeRunSync() shouldBe 500000500000L
+      dispatcher.unsafeRunSync(summation(1000000)) shouldBe 500000500000L
     }
 
     it("should be stack-safe under flatmap with IO") {
@@ -71,7 +68,7 @@ class CaioTests extends AsyncFunSpec with Matchers {
         } else
           Applicative[CaioT].pure(n)
 
-      summation(100000).run(Map.empty).unsafeRunSync() shouldBe 5000550000L
+      dispatcher.unsafeRunSync(summation(100000)) shouldBe 5000550000L
     }
     it("should be stack-safe under flatmap with Kleisli") {
       def summation(n: Long): CaioT[Long] =
@@ -79,12 +76,12 @@ class CaioTests extends AsyncFunSpec with Matchers {
          for {
             a <- Applicative[CaioT].pure(n)
             c <- summation(n - 1)
-            l <- KleisliCaio[C, V, L, Long]{ case (ctx, _) => IO.pure(FoldCaioSuccess(ctx, EventMonoid.empty, a + c)) }
+            l <- Caio.KleisliCaio[C, V, L, Long]{ case (ctx, _) => IO.pure(FoldCaioSuccess(ctx, EventMonoid.empty, a + c)) }
           } yield l
         } else
           Applicative[CaioT].pure(n)
 
-      summation(100000).run(Map.empty).unsafeRunSync() shouldBe 5000050000L
+      dispatcher.unsafeRunSync(summation(100000)) shouldBe 5000050000L
     }
 
     it("should be stack-safe under flatmap with handle Failures") {
@@ -100,7 +97,7 @@ class CaioTests extends AsyncFunSpec with Matchers {
         } else
           Applicative[CaioT].pure(n)
 
-      summation(100000).run(Map.empty).unsafeRunSync() shouldBe 5000050000L
+      dispatcher.unsafeRunSync(summation(100000)) shouldBe 5000050000L
     }
   }
 
@@ -115,9 +112,9 @@ class CaioTests extends AsyncFunSpec with Matchers {
       val handled =
         ApplicativeFail[CaioT, Failure].handleFailuresWith(program)(f => Applicative[CaioT].pure(4))
 
-      handled.run(Map.empty).unsafeRunSync() shouldBe 4
-
+      dispatcher.unsafeRunSync(handled) shouldBe 4
     }
+
     it("Should handle failure event after IO") {
       val program =
         for {
@@ -130,8 +127,7 @@ class CaioTests extends AsyncFunSpec with Matchers {
       val handled =
         ApplicativeFail[CaioT, Failure].handleFailuresWith(program)(f => Applicative[CaioT].pure(4))
 
-      handled.run(Map.empty).unsafeRunSync() shouldBe 4
-
+      dispatcher.unsafeRunSync(handled) shouldBe 4
     }
 
     it("Should handle failure event after Kleisli") {
@@ -146,31 +142,19 @@ class CaioTests extends AsyncFunSpec with Matchers {
       val handled =
         ApplicativeFail[CaioT, Failure].handleFailuresWith(program)(f => Applicative[CaioT].pure(4))
 
-      handled.run(Map.empty).unsafeRunSync() shouldBe 4
+      dispatcher.unsafeRunSync(handled) shouldBe 4
     }
 
     it("Should preserve failure when using tapFailures") {
       val program = (Caio.pure(5) *> Caio.fail(new Failure("BOOM"))).tapFailures((_: NonEmptyList[Failure]) => Caio.unit)
-      program.either.run(Map.empty).unsafeRunSync() shouldBe Left(NonEmptyList.of(new Failure("BOOM")))
-    }
-  }
-
-  describe("Error Handling") {
-    it("Should catch the error when the completion of a Deferred fails") {
-
-      val program =
-        for {
-          promise <- Deferred[CaioT, Unit]
-          _       <- promise.complete(())
-          either  <- new ApplicativeErrorOps(promise.complete(())).attempt
-        } yield either
-
-      program.run(Map.empty).unsafeRunSync().isLeft shouldBe true
+      dispatcher.unsafeRunSync(program.either) shouldBe Left(NonEmptyList.of(new Failure("BOOM")))
     }
   }
 
   describe("Context") {
     it("Should run passing any value when no context required") {
+      import cats.effect.unsafe.implicits.global
+
       val program: CaioC[Any, Int] =
         for {
           a <- Applicative[CaioC[Any, *]].pure(1)
@@ -192,10 +176,12 @@ class CaioTests extends AsyncFunSpec with Matchers {
           c <- Applicative[CaioT].pure(3)
         } yield a + b + c
 
-      program.run(Map.empty).unsafeRunSync() shouldBe 6
+      dispatcher.unsafeRunSync(program) shouldBe 6
     }
 
     it("Should combine different contexts") {
+      import cats.effect.unsafe.implicits.global
+
       trait Context0 { def x: Int }
       trait Context1 { def y: Int }
 
@@ -212,6 +198,8 @@ class CaioTests extends AsyncFunSpec with Matchers {
     }
 
     it("Should provide context") {
+      import cats.effect.unsafe.implicits.global
+
       val program: CaioC[Any, Int] = {
         InvariantAsk[CaioC[(Int, Int, Int), *], (Int, Int, Int)]
           .ask[(Int, Int, Int)]
@@ -225,7 +213,7 @@ class CaioTests extends AsyncFunSpec with Matchers {
     it("Should preserve error when using tapError") {
       case object CustomException extends Exception
       val program = (Caio.pure(5) *> Caio.raiseError(CustomException)).tapError(_ => Caio.unit)
-      program.attempt.run(Map.empty).unsafeRunSync() shouldBe Left(CustomException)
+      dispatcher.unsafeRunSync(program.attempt) shouldBe Left(CustomException)
     }
   }
 
@@ -237,7 +225,8 @@ class CaioTests extends AsyncFunSpec with Matchers {
 
     it("Should combine an infallible computation with a fallible one") {
       val implicits = new StaticImplicits[C, Nothing, L]
-      import implicits._
+      import implicits.staticCaioAsync
+      import cats.effect.unsafe.implicits.global
 
       val program: CaioT[Int] =
         for {
@@ -250,6 +239,7 @@ class CaioTests extends AsyncFunSpec with Matchers {
     }
 
     it("Should combine different errors") {
+      import cats.effect.unsafe.implicits.global
       implicit def implicits[V1] = new CaioApplicative[C, V1, L]
 
       val program: CaioV[Error, Int] =
@@ -263,6 +253,7 @@ class CaioTests extends AsyncFunSpec with Matchers {
     }
 
     it("Should fail with different errors") {
+      import cats.effect.unsafe.implicits.global
       implicit def implicits[V1] = new CaioApplicativeFail[C, V1, L]
 
       val program: CaioV[Error, Unit] =
@@ -277,6 +268,8 @@ class CaioTests extends AsyncFunSpec with Matchers {
   }
 
   describe("Logging") {
+    import cats.effect.unsafe.implicits.global
+
     sealed trait LogEvent
     case object LogEvent0 extends LogEvent
     case object LogEvent1 extends LogEvent

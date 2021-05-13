@@ -2,7 +2,7 @@ package caio.mtl
 
 import caio.<~>
 import cats.{Applicative, Functor, Monad, MonadError, ~>}
-import cats.effect.{Async, Bracket, Concurrent, ConcurrentEffect, LiftIO, Sync}
+import cats.effect.{Async, Concurrent, LiftIO, MonadCancel, Sync}
 import cats.mtl.{Censor, Listen, Tell, Stateful}
 import io.typechecked.alphabetsoup.Mixer
 import shapeless.=:!=
@@ -29,8 +29,8 @@ trait Extends[F[_], E1, E2] {
 
   type FE[A]
 
-  def concurrentEffect(c:E2)(implicit CE:ConcurrentEffect[F]):ConcurrentEffect[FE] =
-    new ConcurrentEffectIsomorphism[FE, F](CE, apply(c))
+  def async(c: E2)(implicit CE: Async[F]): Async[FE] =
+    new AsyncIsomorphism[FE, F](CE, apply(c))
 
   def ask: InvariantAsk[FE, (E1, E2)]
 
@@ -61,7 +61,7 @@ trait Extends[F[_], E1, E2] {
 
   implicit def transformMonadError[E](implicit M: MonadError[F, E]): MonadError[FE, E]
 
-  implicit def transformBracket[E](implicit M: Bracket[F, E]): Bracket[FE, E]
+  implicit def transformMonadCancel[E](implicit M: MonadCancel[F, E]): MonadCancel[FE, E]
 
   implicit def transformSync(implicit S: Sync[F]): Sync[FE]
 

@@ -1,15 +1,19 @@
-import caio.std.{CaioFailuresAsThrowable,Par}
+import caio.std.CaioFailuresAsThrowable
 import cats.data.NonEmptyList
 
-package object caio {
+import cats.effect.{Fiber, Outcome}
 
-  type ParCaio[C, V, L, +A] = Par.Type[C, V, L, A]
+package object caio {
 
   type <~>[F[_], G[_]] = BijectionK[F, G]
 
   type ErrorOrFailure[V] = Throwable Either NonEmptyList[V]
 
-  implicit class ErrorOps[V](val eof:ErrorOrFailure[V]) extends AnyVal {
+  type OutcomeCaio[C, V, L, A] = Outcome[Caio[C, V, L, *], Throwable, A]
+
+  type FiberCaio[C, V, L, A] = Fiber[Caio[C, V, L, *], Throwable, A]
+
+  implicit class ErrorOps[V](val eof: ErrorOrFailure[V]) extends AnyVal {
     def toThrowable:Throwable =
       eof.fold[Throwable](identity, CaioFailuresAsThrowable.apply)
   }

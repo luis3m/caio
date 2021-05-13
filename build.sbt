@@ -20,9 +20,9 @@ publishArtifact in(Test, packageDoc) := true
 // enable publishing the test sources jar
 publishArtifact in(Test, packageSrc) := true
 
-val currentScalaVersion = "2.13.5"
-ThisBuild / scalaVersion := currentScalaVersion
-crossScalaVersions := Seq("2.12.13", currentScalaVersion)
+val currentScalaVersion_ = "2.13.5"
+ThisBuild / scalaVersion := currentScalaVersion_
+crossScalaVersions := Seq("2.12.13", currentScalaVersion_)
 
 scalacOptions ++= Seq(
   "-deprecation", // Emit warning and location for usages of deprecated APIs.
@@ -72,9 +72,10 @@ javacOptions ++= Seq("-target", "1.8", "-source", "1.8", "-Xlint:deprecation")
 
 libraryDependencies ++= Seq(
   "org.typelevel" %% "cats-mtl" % "1.1.2",
-  "org.typelevel" %% "cats-effect" % "2.4.0",
+  "org.typelevel" %% "cats-effect" % "3.1.0",
   "org.typelevel" %% "cats-mtl-laws" % "1.1.2" % "test",
-  "org.typelevel" %% "cats-effect-laws" % "2.4.0" % "test",
+  "org.typelevel" %% "cats-effect-laws" % "3.0.1" % "test",
+  "org.typelevel" %% "cats-effect-testkit" % "3.0.1" % "test",
   "org.typelevel" %% "discipline-munit" % "1.0.6" % "test",
   "io.typechecked" %% "alphabet-soup" % "0.3.0",
   "org.scalatest" %% "scalatest" % "3.0.8" % "test"

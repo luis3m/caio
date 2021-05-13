@@ -2,14 +2,18 @@ package caio.std
 
 import caio._
 import cats.Monoid
-import cats.effect.Sync
+import cats.effect.{IO, Sync}
+import cats.effect.kernel.CancelScope
 
-class CaioSync[C, V, L: Monoid] extends CaioBracket[C, V, L] with Sync[Caio[C, V, L, *]] {
-  def suspend[A](thunk: => Caio[C, V, L, A]): Caio[C, V, L, A] =
-    KleisliCaio[C, V, L, A]{ case (c, ref) =>
-      Caio.foldIO(thunk, c, ref)
+abstract class CaioSync[C, V, L: Monoid] extends CaioMonadCancel[C, V, L] with Sync[Caio[C, V, L, *]] with CaioClock[C, V, L] {
+  final def suspend[A](hint: Sync.Type)(thunk: => A): Caio[C, V, L, A] =
+    Caio.liftIO(IO.suspend(hint)(thunk))
+}
+
+object CaioSync {
+  def apply[C, V, L: Monoid]: CaioSync[C, V, L] =
+    new CaioSync[C, V, L] {
+      override final def rootCancelScope: CancelScope =
+        CancelScope.Cancelable
     }
-
-  override def delay[A](thunk: => A): Caio[C, V, L, A] =
-    Caio(thunk)
 }

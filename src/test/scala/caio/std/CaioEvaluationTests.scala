@@ -22,6 +22,7 @@ class CaioEvaluationTests extends AsyncFunSpec with Matchers {
   type CaioT[A] = Caio[C, V, L, A]
 
   def run[A](c:C, caio:CaioT[A]): (C, L, Either[EoF, A]) = {
+    import cats.effect.unsafe.implicits.global
     caio.runContext(c).unsafeRunSync()
   }
 
@@ -29,7 +30,7 @@ class CaioEvaluationTests extends AsyncFunSpec with Matchers {
     protected implicit def ML: Monoid[L] = EventMonoid
   }
 
-  import implicits._
+  import implicits.{ staticCaioMonad => _, _}
 
   describe("Setting and retrieving environment") {
     it ("Should get the state") {
@@ -101,7 +102,6 @@ class CaioEvaluationTests extends AsyncFunSpec with Matchers {
       run("1" -> 1, f) shouldBe ("1" -> 1, Vector.empty, Left(Left(Exception.exception1)))
     }
   }
-
 
   describe("combination of patterns") {
     it("should return the correct values") {

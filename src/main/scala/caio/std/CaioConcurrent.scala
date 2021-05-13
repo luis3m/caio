@@ -2,13 +2,24 @@ package caio.std
 
 import caio._
 import cats.Monoid
-import cats.effect._
+import cats.effect.IO
+import cats.effect.kernel.{Deferred, GenConcurrent, Spawn, Ref, Unique}
 
-class CaioConcurrent[C, V, L:Monoid](implicit CS:ContextShift[IO]) extends CaioAsync[C, V, L] with Concurrent[Caio[C, V, L, *]] {
+abstract class CaioConcurrent[C, V, L: Monoid] extends CaioSpawn[C, V, L] with GenConcurrent[Caio[C, V, L, *], Throwable] { 
+  final def ref[A](a: A): Caio[C, V, L, Ref[Caio[C, V, L, *], A]] =
+    Caio.apply(Ref.unsafe[Caio[C, V, L, *], A](a)(CaioSync[C, V, L]))
 
-  def start[A](fa: Caio[C, V, L, A]): Caio[C, V, L, Fiber[Caio[C, V, L, *], A]] =
-    fa.start
+  final def deferred[A]: Caio[C, V, L, Deferred[Caio[C, V, L, *], A]] =
+    Caio.apply(Deferred.unsafe[Caio[C, V, L, *], A](CaioAsync[C, V, L]))
+}
 
-  def racePair[A, B](fa: Caio[C, V, L, A], fb: Caio[C, V, L, B]): Caio[C, V, L, Either[(A, Fiber[Caio[C, V, L, *], B]), (Fiber[Caio[C, V, L, *], A], B)]] =
-    fa.racePair(fb)
+object CaioConcurrent {
+  def apply[C, V, L: Monoid]: CaioConcurrent[C, V, L] =
+    new CaioConcurrent[C, V, L] {
+      final def unique: Caio[C,V,L, Unique.Token] =
+        Caio.liftIO(Spawn[IO].unique)
+
+      final def never[A]: Caio[C, V, L, A] =
+        Caio.never
+    }
 }

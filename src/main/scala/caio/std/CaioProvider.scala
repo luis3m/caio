@@ -1,6 +1,6 @@
 package caio.std
 
-import caio.{<~>, Caio, KleisliCaio, mtl}
+import caio.{<~>, Caio, mtl}
 import caio.mtl._
 import cats.effect._
 import cats._
@@ -51,7 +51,7 @@ case class CaioExtends[C, V, L:Monoid, E1, E2]()(implicit M: Mixer[C, E1], I:Mix
   def functionK: Caio[C, V, L, *] ~> FE =
     new (Caio[C, V, L, *] ~> FE) {
       def apply[A](fa: Caio[C, V, L, A]): Caio[(E1, E2), V, L, A] =
-        KleisliCaio[(E1, E2), V, L, A] { (c2, ref) =>
+        Caio.KleisliCaio[(E1, E2), V, L, A] { (c2, ref) =>
           Caio.foldIO[C, V, L, A](fa, I.mix(c2._1 -> ()), ref).map(_.contextMap(c => M.mix(c) -> c2._2))
         }
     }
@@ -71,8 +71,8 @@ case class CaioExtends[C, V, L:Monoid, E1, E2]()(implicit M: Mixer[C, E1], I:Mix
   implicit def transformMonadError[E](implicit M:MonadError[Caio[C, V, L, *], E]):MonadError[FE, E] =
     M.asInstanceOf[MonadError[FE, E]]
 
-  implicit def transformBracket[E](implicit M:Bracket[Caio[C, V, L, *], E]):Bracket[FE, E] =
-    M.asInstanceOf[Bracket[FE, E]]
+  implicit def transformMonadCancel[E](implicit M: MonadCancel[Caio[C, V, L, *], E]): MonadCancel[FE, E] =
+    M.asInstanceOf[MonadCancel[FE, E]]
 
   implicit def transformSync(implicit S:Sync[Caio[C, V, L, *]]):Sync[FE] =
     S.asInstanceOf[Sync[FE]]

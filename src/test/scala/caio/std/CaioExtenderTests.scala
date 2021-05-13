@@ -3,7 +3,8 @@ package caio.std
 import caio.{Caio, Failure}
 import caio.Event.EventLog
 import caio.mtl.{ContextProjector, Extender, ExtendsOn, InvariantAsk, Provider}
-import cats.effect.{Effect, Sync}
+import caio.std.CaioDispatcher
+import cats.effect.Sync
 import cats.{Functor, Monad}
 import org.scalatest.{AsyncFunSpec, Matchers}
 
@@ -11,9 +12,7 @@ class CaioExtenderTests extends AsyncFunSpec with Matchers{
   import cats.implicits._
   type CaioT[A] = Caio[Unit, Failure, EventLog, A]
 
-  implicit val caioMonad: Monad[CaioT] = new CaioMonad[Unit, Failure, EventLog]
-
-  val effect: Effect[CaioT] = new CaioEffect[Unit, Failure, EventLog](())()()()
+  val dispatcher: CaioDispatcher[Unit, Failure, EventLog] = CaioDispatcher.unsafe[Unit, Failure, EventLog](())()()()
 
   class AskInt[M[_]: InvariantAsk[*[_], Int]] {
     def run: M[Int] = InvariantAsk[M,Int].ask
@@ -69,7 +68,7 @@ class CaioExtenderTests extends AsyncFunSpec with Matchers{
   }
 
   def runSuccess[A](caio: CaioT[A]): A =
-    effect.toIO(caio).unsafeRunSync()
+    dispatcher.unsafeRunSync(caio)
 
   describe("Provider tests") {
     import CaioProvider._
