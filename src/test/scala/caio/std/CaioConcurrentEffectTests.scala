@@ -32,7 +32,7 @@ class CaioConcurrentEffectTests extends AsyncFunSpec with Matchers {
 
   describe("Async shouldnt loop") {
     it("Works with timer async case") {
-      run(Caio.sleep(1.millis)(Event.EventMonoid)) shouldBe ()
+      run(Caio.sleep(1.millis)) shouldBe ()
     }
   }
 
@@ -43,7 +43,7 @@ class CaioConcurrentEffectTests extends AsyncFunSpec with Matchers {
       val program =
         for {
           ref  <- Ref.of[CaioT, List[Int]](Nil)
-          _    <- numbers.parTraverse_[CaioT, Unit] { n => Caio.sleep(random.nextInt(100).millis)(Event.EventMonoid) *> ref.update(_ :+ n) }
+          _    <- numbers.parTraverse_[CaioT, Unit] { n => Caio.sleep(random.nextInt(100).millis) *> ref.update(_ :+ n) }
           list <- ref.get
         } yield NonEmptyList.fromListUnsafe(list)
 

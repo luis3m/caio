@@ -8,27 +8,27 @@ import cats.{CommutativeMonad, Monoid, Parallel}
 import cats.mtl.{Censor, Local, Stateful}
 import cats.effect.{Async, Concurrent, LiftIO, Sync}
 
-class DynamicContextImplicits[V, L](implicit ML: Monoid[L]) {
+class DynamicContextImplicits[V, L] {
 
   private val static: StaticImplicits[Unit, V, L] =
-    new StaticImplicits[Unit, V, L]()(ML) {}
+    new StaticImplicits[Unit, V, L]() {}
 
   implicit def dynamicCaioMonad[C]: CommutativeMonad[Caio[C, V, L, *]] =
     static.staticCaioMonad.asInstanceOf[CommutativeMonad[Caio[C, V, L, *]]]
 
   implicit def dynamicCaioSync[C]: Sync[Caio[C, V, L, *]] =
-    CaioSync[C, V, L](ML)
+    CaioSync[C, V, L]
 
   implicit def dynamicCaioAsync[C]: Async[Caio[C, V, L, *]] =
-    new CaioAsync[C, V, L]()(ML)
+    new CaioAsync[C, V, L]()
 
   implicit def dynamicCaioConcurrent[C]: Concurrent[Caio[C, V, L, *]] =
-    CaioConcurrent[C, V, L](ML)
+    CaioConcurrent[C, V, L]
 
   implicit def dynamicCaioApplicativeFail[C]: ApplicativeFail[Caio[C, V, L, *], V] =
     static.staticCaioApplicativeFail.asInstanceOf[ApplicativeFail[Caio[C, V, L, *], V]]
 
-  implicit def dynamicCaioCensor[C]: Censor[Caio[C, V, L, *], L] =
+  implicit def dynamicCaioCensor[C](implicit ML: Monoid[L]): Censor[Caio[C, V, L, *], L] =
     static.staticCaioCensor.asInstanceOf[Censor[Caio[C, V, L, *], L]]
 
   implicit def dynamicCaioAsk[C]: InvariantAsk[Caio[C, V, L, *], C] =

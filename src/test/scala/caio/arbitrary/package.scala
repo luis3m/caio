@@ -38,16 +38,16 @@ package object arbitrary {
   def genFail[C, V: Arbitrary, L, A]: Gen[Caio[C, V, L, A]] =
     getArbitrary[V].map(Caio.fail(_))
 
-  def genAsync[C, V, L: Monoid, A: Arbitrary]: Gen[Caio[C, V, L, A]] =
+  def genAsync[C, V, L, A: Arbitrary]: Gen[Caio[C, V, L, A]] =
     getArbitrary[(Either[Throwable, A] => Unit) => Unit].map(Caio.async_[C, V, L, A])
 
-  def genTell[C, V, L: Arbitrary, A: Arbitrary]: Gen[Caio[C, V, L, A]] =
+  def genTell[C, V, L: Monoid: Arbitrary, A: Arbitrary]: Gen[Caio[C, V, L, A]] =
     getArbitrary[L].flatMap(l => genPure[C, V, L, A].map(Caio.tell(l) *> _))
 
   def genContext[C: Arbitrary, V, L, A: Arbitrary]: Gen[Caio[C, V, L, A]] =
     getArbitrary[C].flatMap(c => genPure[C, V, L, A].map(Caio.setContext(c) *> _))
 
-  def genNestedAsync[C: Arbitrary, V: Arbitrary, L: Arbitrary: Monoid, A: Arbitrary: Cogen]: Gen[Caio[C, V, L, A]] =
+  def genNestedAsync[C: Arbitrary, V: Arbitrary, L: Monoid: Arbitrary, A: Arbitrary: Cogen]: Gen[Caio[C, V, L, A]] =
     getArbitrary[(Either[Throwable, Caio[C, V, L, A]] => Unit) => Unit]
       .map(k => Caio.async_(k).flatMap(x => x))
 

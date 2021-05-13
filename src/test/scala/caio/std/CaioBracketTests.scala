@@ -19,7 +19,7 @@ class CaioBracketTests extends AsyncFunSpec with Matchers{
 
   type CaioT[A] = Caio[C, V, L, A]
 
-  def run[A](caio:CaioT[A]): (C, L, Either[EoF, A]) = {
+  def run[A](caio:CaioT[A]): (C, Option[L], Either[EoF, A]) = {
     import cats.effect.unsafe.implicits.global
     caio.runContext(()).unsafeRunSync()
   }
@@ -115,7 +115,7 @@ class CaioBracketTests extends AsyncFunSpec with Matchers{
           fail()
       }
       run(program)._3 shouldBe Right("test2")
-      run(program)._2 shouldBe Vector(Event.event1, Event.event2)
+      run(program)._2 shouldBe Some(Vector(Event.event1, Event.event2))
     }
 
     it ("Should succeed in simple case with Logs in acquire, use and release") {
@@ -128,7 +128,7 @@ class CaioBracketTests extends AsyncFunSpec with Matchers{
           fail()
       }
       run(program)._3 shouldBe Right("test2")
-      run(program)._2 shouldBe Vector(Event.event1, Event.event2, Event.event3)
+      run(program)._2 shouldBe Some(Vector(Event.event1, Event.event2, Event.event3))
     }
 
     it ("Should error in error case with Logs in acquire, use and release") {
@@ -141,7 +141,7 @@ class CaioBracketTests extends AsyncFunSpec with Matchers{
           fail()
       }
       run(program)._3 shouldBe Left(Left(Exception.exception1))
-      run(program)._2 shouldBe Vector(Event.event1, Event.event2, Event.event3)
+      run(program)._2 shouldBe Some(Vector(Event.event1, Event.event2, Event.event3))
     }
 
     it ("Should error in error case with Logs in acquire, use and release exception") {
@@ -154,7 +154,7 @@ class CaioBracketTests extends AsyncFunSpec with Matchers{
           fail()
       }
       run(program)._3 shouldBe Left(Left(Exception.exception1))
-      run(program)._2 shouldBe Vector(Event.event1, Event.event2, Event.event3)
+      run(program)._2 shouldBe Some(Vector(Event.event1, Event.event2, Event.event3))
     }
 
     it ("Should error in error case with Logs in acquire, use and release failure") {
@@ -167,7 +167,7 @@ class CaioBracketTests extends AsyncFunSpec with Matchers{
           fail()
       }
       run(program)._3 shouldBe Left(Left(Exception.exception1))
-      run(program)._2 shouldBe Vector(Event.event1, Event.event2, Event.event3)
+      run(program)._2 shouldBe Some(Vector(Event.event1, Event.event2, Event.event3))
     }
 
     it ("Should fail in failure case with Logs in acquire, use and release") {
@@ -180,7 +180,7 @@ class CaioBracketTests extends AsyncFunSpec with Matchers{
           fail()
       }
       run(program)._3 shouldBe Left(Right(NonEmptyList(Failure.failure1, Nil)))
-      run(program)._2 shouldBe Vector(Event.event1, Event.event2, Event.event3)
+      run(program)._2 shouldBe Some(Vector(Event.event1, Event.event2, Event.event3))
     }
 
     it ("Should fail in failure case with Logs in acquire, use and release, and release exception") {
@@ -193,7 +193,7 @@ class CaioBracketTests extends AsyncFunSpec with Matchers{
           fail()
       }
       run(program)._3 shouldBe Left(Right(NonEmptyList(Failure.failure1, Nil)))
-      run(program)._2 shouldBe Vector(Event.event1, Event.event2, Event.event3)
+      run(program)._2 shouldBe Some(Vector(Event.event1, Event.event2, Event.event3))
     }
 
     it ("Should fail in failure case with Logs in acquire, use and release, and release failure") {
@@ -206,7 +206,7 @@ class CaioBracketTests extends AsyncFunSpec with Matchers{
           fail()
       }
       run(program)._3 shouldBe Left(Right(NonEmptyList(Failure.failure1, Nil)))
-      run(program)._2 shouldBe Vector(Event.event1, Event.event2, Event.event3)
+      run(program)._2 shouldBe Some(Vector(Event.event1, Event.event2, Event.event3))
     }
 
   }

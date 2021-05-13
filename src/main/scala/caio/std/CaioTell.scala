@@ -1,12 +1,15 @@
 package caio.std
 
 import caio.Caio
-import cats.Functor
+import cats.{Functor, Monoid}
 import cats.mtl.Tell
 
-class CaioTell[C, V, L] extends Tell[Caio[C, V, L, *], L]{
+class CaioTell[C, V, L: Monoid] extends Tell[Caio[C, V, L, *], L]{
   override def functor: Functor[Caio[C, V, L, *]] =
     new CaioFunctor[C, V, L] {}
+
+  val monoid: Monoid[L] =
+    implicitly[Monoid[L]]
 
   final def tell(l: L): Caio[C, V, L, Unit] =
     Caio.tell(l)

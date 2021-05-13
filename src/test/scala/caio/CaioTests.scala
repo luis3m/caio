@@ -76,7 +76,7 @@ class CaioTests extends AsyncFunSpec with Matchers {
          for {
             a <- Applicative[CaioT].pure(n)
             c <- summation(n - 1)
-            l <- Caio.KleisliCaio[C, V, L, Long]{ case (ctx, _) => IO.pure(FoldCaioSuccess(ctx, EventMonoid.empty, a + c)) }
+            l <- Caio.KleisliCaio[C, V, L, Long]{ case (ctx, _) => IO.pure(FoldCaioSuccess(ctx, None, a + c)) }
           } yield l
         } else
           Applicative[CaioT].pure(n)
@@ -235,7 +235,7 @@ class CaioTests extends AsyncFunSpec with Matchers {
           c <- Applicative[CaioT].pure(3)
         } yield a + b + c
 
-      program.run(Map.empty).unsafeRunSync() shouldBe 6
+      program.run(Map.empty[String, String]).unsafeRunSync() shouldBe 6
     }
 
     it("Should combine different errors") {
@@ -249,7 +249,7 @@ class CaioTests extends AsyncFunSpec with Matchers {
           c <- Applicative[CaioV[Error2.type, *]].pure(3)
         } yield a + b + c
 
-      program.run(Map.empty).unsafeRunSync() shouldBe 6
+      program.run(Map.empty[String, String]).unsafeRunSync() shouldBe 6
     }
 
     it("Should fail with different errors") {
@@ -263,7 +263,7 @@ class CaioTests extends AsyncFunSpec with Matchers {
           _ <- ApplicativeFail[CaioV[Error2.type, *], Error2.type].fail[Unit](Error2)
         } yield ()
 
-      program.runFail(Map.empty).unsafeRunSync() shouldBe Left(NonEmptyList.of(Error0))
+      program.runFail(Map.empty[String, String]).unsafeRunSync() shouldBe Left(NonEmptyList.of(Error0))
     }
   }
 
@@ -285,7 +285,7 @@ class CaioTests extends AsyncFunSpec with Matchers {
           } yield ()
         }
 
-      program.run(Map.empty).unsafeRunSync()._2 shouldBe List(LogEvent0, LogEvent1)
+      program.run(Map.empty[String, String]).unsafeRunSync()._2 shouldBe List(LogEvent0, LogEvent1)
     }
   }
 

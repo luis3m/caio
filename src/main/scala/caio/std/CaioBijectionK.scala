@@ -1,7 +1,7 @@
 package caio.std
 
 import caio.{<~>, Caio}
-import cats.{Monoid, ~>}
+import cats.~>
 import cats.arrow.FunctionK
 
 
@@ -17,7 +17,7 @@ import cats.arrow.FunctionK
  * @tparam V
  * @tparam L
  */
-class CaioBijectionK[C1, C2, V, L: Monoid](f: C2 => C1, invF: C1 => C2)
+class CaioBijectionK[C1, C2, V, L](f: C2 => C1, invF: C1 => C2)
   extends (Caio[C1, V, L, *] <~> Caio[C2, V, L, *]) {
   def apply[A](fa: Caio[C1, V, L, A]): Caio[C2, V, L, A] =
     Caio.KleisliCaio[C2, V, L, A] { (c2, ref) =>

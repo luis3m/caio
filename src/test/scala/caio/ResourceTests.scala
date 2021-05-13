@@ -145,7 +145,7 @@ class ResourceTests extends TestInstances {
             .guaranteeCase[C, V, L, Int](stop.complete(_).void)
 
           r.start[C, V, L, Int].flatMap { fiber =>
-            Caio.sleep(200.millis)(Event.EventMonoid) *> fiber.cancel *> stop.get
+            Caio.sleep(200.millis) *> fiber.cancel *> stop.get
           }
         }
         .timeout(2.seconds)
@@ -379,7 +379,7 @@ class ResourceTests extends TestInstances {
     var leftReleased = false
     var rightReleased = false
 
-    val wait = Caio.sleep(200.millis)(Event.EventMonoid)
+    val wait = Caio.sleep(200.millis)
     val lhs = Resource.make[CaioT, Unit](wait *> Caio { leftAllocated = true }) { _ =>
       Caio { leftReleasing = true } *> wait *> Caio { leftReleased = true }
     }
@@ -403,7 +403,7 @@ class ResourceTests extends TestInstances {
     var leftReleased = false
     var rightReleased = false
 
-    def wait(n: Int): CaioT[Unit] = Caio.sleep(n.millis)(Event.EventMonoid)
+    def wait(n: Int): CaioT[Unit] = Caio.sleep(n.millis)
     val lhs = for {
       _ <- Resource.make(wait(1) *> Caio { leftAllocated = true }) { _ =>
         Caio { leftReleasing = true } *> wait(1) *> Caio { leftReleased = true }
@@ -442,7 +442,7 @@ class ResourceTests extends TestInstances {
     var leftReleased = false
     var rightReleased = false
 
-    def wait(n: Int): CaioT[Unit] = Caio.sleep(n.millis)(Event.EventMonoid)
+    def wait(n: Int): CaioT[Unit] = Caio.sleep(n.millis)
     val lhs = Resource.make(wait(300) *> Caio { leftAllocated = true }) { _ =>
       Caio { leftReleasing = true } *> wait(100) *> Caio { leftReleased = true }
     }
@@ -480,7 +480,7 @@ class ResourceTests extends TestInstances {
             .use(Caio.pure(_))
 
           r.start[C, V, L, Int].flatMap { fiber =>
-            Caio.sleep(200.millis)(Event.EventMonoid) *> fiber.cancel *> stop.get
+            Caio.sleep(200.millis) *> fiber.cancel *> stop.get
           }
         }
         .timeout(2.seconds)

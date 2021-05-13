@@ -144,10 +144,10 @@ class TestInstances extends DisciplineSuite with CatsTestInstances {
     }
   }
 
-  implicit def eqCaio[C0, V0, L0: Monoid, A: Eq](implicit C: C0, T: Ticker): Eq[Caio[C0, V0, L0, A]] =
+  implicit def eqCaio[C0, V0, L0, A: Eq](implicit C: C0, T: Ticker): Eq[Caio[C0, V0, L0, A]] =
     Eq.by(caio => unsafeRun(caio.run(C)))
 
-  implicit def caioIsEqToProp[C0, V0, L0: Monoid, A: Eq](implicit C: C0, T: Ticker, pp: Caio[C0, V0, L0, A] => Pretty): IsEq[Caio[C0, V0, L0, A]] => Prop =
+  implicit def caioIsEqToProp[C0, V0, L0, A: Eq](implicit C: C0, T: Ticker, pp: Caio[C0, V0, L0, A] => Pretty): IsEq[Caio[C0, V0, L0, A]] => Prop =
     isEq =>
       if (eqCaio[C0, V0, L0, A].eqv(isEq.lhs, isEq.rhs)) Prop.proved
       else

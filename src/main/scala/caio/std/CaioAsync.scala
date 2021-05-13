@@ -1,13 +1,13 @@
 package caio.std
 
 import caio.Caio
-import cats.{~>, Monoid}
+import cats.~>
 import cats.effect.{Async, IO, Sync, Ref}
 import cats.effect.kernel.{Cont, MonadCancel}
 
 import scala.concurrent.ExecutionContext
 
-class CaioAsync[C, V, L: Monoid] extends CaioTemporal[C, V, L] with Async[Caio[C, V, L, *]] {
+class CaioAsync[C, V, L] extends CaioTemporal[C, V, L] with Async[Caio[C, V, L, *]] {
   final def suspend[A](hint: Sync.Type)(thunk: => A): Caio[C, V, L, A] =
     Caio.liftIO(IO.suspend(hint)(thunk))
 
@@ -33,13 +33,13 @@ class CaioAsync[C, V, L: Monoid] extends CaioTemporal[C, V, L] with Async[Caio[C
       }
     }
 
-  private def liftCaio[F[_]](liftF: IO ~> F, context: C, ref: Ref[IO, L]): Caio[C, V, L, *] ~> F =
+  private def liftCaio[F[_]](liftF: IO ~> F, context: C, ref: Ref[IO, Option[L]]): Caio[C, V, L, *] ~> F =
     new (Caio[C, V, L, *] ~> F) {
       def apply[A](fa: Caio[C, V, L, A]): F[A] = liftF(Caio.run(fa, context, ref))
     }
 }
 
 object CaioAsync {
-  def apply[C, V, L: Monoid]: CaioAsync[C, V, L] =
+  def apply[C, V, L]: CaioAsync[C, V, L] =
     new CaioAsync[C, V, L]
 }

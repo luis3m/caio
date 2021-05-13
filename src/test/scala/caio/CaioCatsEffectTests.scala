@@ -381,7 +381,7 @@ class CaioCatsEffectTests extends TestInstances {
 
     val caio = for {
       pa <- Deferred[CaioT, Unit]
-      fiber <- Caio.unit.guarantee(pa.complete(()) *> Caio.sleep(200.millis)(Event.EventMonoid)).start[C, V, L, Unit]
+      fiber <- Caio.unit.guarantee(pa.complete(()) *> Caio.sleep(200.millis)).start[C, V, L, Unit]
       _ <- pa.get
       _ <- fiber.cancel
     } yield ()
@@ -398,7 +398,7 @@ class CaioCatsEffectTests extends TestInstances {
 
     val caio = for {
       pa <- Deferred[CaioT, Unit]
-      fiber <- Caio.unit.guarantee(pa.complete(()) *> Caio.sleep(200.millis)(Event.EventMonoid) *> Caio.raiseError(dummy)).start[C, V, L, Unit]
+      fiber <- Caio.unit.guarantee(pa.complete(()) *> Caio.sleep(200.millis) *> Caio.raiseError(dummy)).start[C, V, L, Unit]
       _ <- pa.get
       _ <- fiber.cancel
     } yield ()
@@ -414,7 +414,7 @@ class CaioCatsEffectTests extends TestInstances {
     val caio = for {
       pa <- Deferred[CaioT, Unit]
       fibA <- Caio.unit
-        .bracket[C, V, L, Unit, Unit](_ => Caio.unit.guarantee(pa.complete(()) *> Caio.sleep(200.millis)(Event.EventMonoid)))(_ => Caio.unit)
+        .bracket[C, V, L, Unit, Unit](_ => Caio.unit.guarantee(pa.complete(()) *> Caio.sleep(200.millis)))(_ => Caio.unit)
         .start[C, V, L, Unit]
       _ <- pa.get
       _ <- fibA.cancel
@@ -431,7 +431,7 @@ class CaioCatsEffectTests extends TestInstances {
     val caio = for {
       pa <- Deferred[CaioT, Unit]
       fiber <- Caio.unit
-        .bracket[C, V, L, Unit, Unit](_ => (pa.complete(()) *> Caio.never).guarantee(Caio.sleep(200.millis)(Event.EventMonoid)))(_ => Caio.unit)
+        .bracket[C, V, L, Unit, Unit](_ => (pa.complete(()) *> Caio.never).guarantee(Caio.sleep(200.millis)))(_ => Caio.unit)
         .start[C, V, L, Unit]
       _ <- pa.get
       _ <- Caio.race(fiber.cancel, fiber.cancel)
@@ -447,8 +447,8 @@ class CaioCatsEffectTests extends TestInstances {
 
     val caio = for {
       pa <- Deferred[CaioT, Unit]
-      fiber <- (pa.complete(()) *> Caio.sleep(200.millis)(Event.EventMonoid))
-        .bracket[C, V, L, Unit, Unit](_ => Caio.unit)(_ => Caio.sleep(200.millis)(Event.EventMonoid))
+      fiber <- (pa.complete(()) *> Caio.sleep(200.millis))
+        .bracket[C, V, L, Unit, Unit](_ => Caio.unit)(_ => Caio.sleep(200.millis))
         .start[C, V, L, Unit]
       _ <- pa.get
       _ <- Caio.race(fiber.cancel, fiber.cancel)
@@ -463,7 +463,7 @@ class CaioCatsEffectTests extends TestInstances {
     import params._
 
     val sleep =
-      Caio.sleep(1.second)(Event.EventMonoid)
+      Caio.sleep(1.second)
 
     val caio = for {
       fiber <- sleep.start[C, V, L, Unit]

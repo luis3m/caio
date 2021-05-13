@@ -9,9 +9,6 @@ class CaioCensor[C, V, L: Monoid] extends CaioListen[C, V, L] with Censor[Caio[C
   val applicative: CommutativeApplicative[Caio[C, V, L, *]] =
     new CaioApplicative[C, V, L]
 
-  val monoid: Monoid[L] =
-    implicitly[Monoid[L]]
-
   final def censor[A](fa: Caio[C, V, L, A])(f: L => L): Caio[C, V, L, A] =
     fa.censor(f)
 

@@ -9,24 +9,24 @@ import cats.mtl.{Censor, Local, Stateful}
 import cats.effect.{Async, Concurrent, LiftIO, Sync}
 import cats.effect.instances.spawn
 
-class StaticImplicits[C, V, L](implicit ML: Monoid[L]){
+class StaticImplicits[C, V, L] {
 
   implicit val staticCaioMonad: CommutativeMonad[Caio[C,V,L, *]] =
     new CaioMonad[C, V, L]
 
   implicit val staticCaioSync: Sync[Caio[C,V,L, *]] =
-    CaioSync[C, V, L](ML)
+    CaioSync[C, V, L]
 
   implicit val staticCaioAsync: Async[Caio[C,V,L, *]] =
-    new CaioAsync[C, V, L]()(ML)
+    new CaioAsync[C, V, L]()
 
   implicit val staticCaioConcurrent: Concurrent[Caio[C,V,L, *]] =
-    CaioConcurrent[C, V, L](ML)
+    CaioConcurrent[C, V, L]
 
   implicit val staticCaioApplicativeFail: ApplicativeFail[Caio[C, V, L, *], V] =
     new CaioApplicativeFail[C, V, L]
 
-  implicit val staticCaioCensor: Censor[Caio[C, V, L, *], L] =
+  implicit def staticCaioCensor(implicit ML: Monoid[L]): Censor[Caio[C, V, L, *], L] =
     new CaioCensor[C, V, L]()(ML)
 
   implicit val staticCaioAsk: InvariantAsk[Caio[C, V, L, *], C] =

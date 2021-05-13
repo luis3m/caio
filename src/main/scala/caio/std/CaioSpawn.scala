@@ -1,17 +1,16 @@
 package caio.std
 
 import caio.{Caio, CaioUnhandledFailuresException, FiberCaio, FoldCaioError, FoldCaioFailure, FoldCaioSuccess, FoldCaioPure, OutcomeCaio}
-import cats.Monoid
 import cats.effect.{OutcomeIO, IO, FiberIO}
 import cats.effect.kernel.{Fiber, GenSpawn, Spawn, Outcome, Unique}
 import cats.effect.unsafe.implicits.global
 import cats.data.NonEmptyList
 
-abstract class CaioSpawn[C, V, L: Monoid] extends CaioMonadCancel[C, V, L] with GenSpawn[Caio[C, V, L, *], Throwable] {
+abstract class CaioSpawn[C, V, L] extends CaioMonadCancel[C, V, L] with GenSpawn[Caio[C, V, L, *], Throwable] {
   final def start[A](fa: Caio[C, V, L, A]): Caio[C, V, L, FiberCaio[C, V, L, A]] =
     Caio.KleisliCaio[C, V, L, FiberCaio[C, V, L, A]] { case (c, ref) =>
       Caio.foldIO[C, V, L, A](fa, c, ref).start.map { fiber =>
-        FoldCaioSuccess(c, Monoid[L].empty, fiber2Caio(fiber))
+        FoldCaioSuccess(c, None, fiber2Caio(fiber))
       }
     }
   
@@ -93,7 +92,7 @@ abstract class CaioSpawn[C, V, L: Monoid] extends CaioMonadCancel[C, V, L] with 
 }
 
 object CaioSpawn {
-  def apply[C, V, L: Monoid]: CaioSpawn[C, V, L] =
+  def apply[C, V, L]: CaioSpawn[C, V, L] =
     new CaioSpawn[C, V, L] {
       def unique: Caio[C,V,L, Unique.Token] =
         Caio.liftIO(Spawn[IO].unique)

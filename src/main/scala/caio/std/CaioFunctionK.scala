@@ -2,7 +2,6 @@ package caio.std
 
 import caio.Caio
 import cats.arrow.FunctionK
-import cats.Monoid
 import io.typechecked.alphabetsoup.Mixer
 
 /**
@@ -17,7 +16,7 @@ import io.typechecked.alphabetsoup.Mixer
  * @tparam V
  * @tparam L
  */
-class CaioFunctionK[C1, C2, V, L: Monoid](f: C2 => C1, invF: (C1, C2) => C2)
+class CaioFunctionK[C1, C2, V, L](f: C2 => C1, invF: (C1, C2) => C2)
   extends FunctionK[Caio[C1, V, L, *],Caio[C2, V, L, *]] {
   def apply[A](fa: Caio[C1, V, L, A]): Caio[C2, V, L, A] =
     Caio.KleisliCaio[C2, V, L, A] { (c2, ref) =>
@@ -38,7 +37,7 @@ object CaioFunctionK {
    * @tparam L
    * @return
    */
-  def extendBy[C1, C2, E, V, L:Monoid](implicit M: Mixer[(C1, E), C2], I: Mixer[(C2, Unit), C1]):FunctionK[Caio[C1, V, L, *],Caio[C2, V, L, *]] =
+  def extendBy[C1, C2, E, V, L](implicit M: Mixer[(C1, E), C2], I: Mixer[(C2, Unit), C1]):FunctionK[Caio[C1, V, L, *],Caio[C2, V, L, *]] =
     new CaioFunctionK[C1, C2, V, L](c2 => I.mix(c2 -> ()), (c1, c2) => I.inject(c1, c2 -> ())._1)
 
   /**
@@ -55,6 +54,6 @@ object CaioFunctionK {
    * @tparam L
    * @return
    */
-  def resolveWith[C1, C2, E, V, L:Monoid](e:E)(implicit M: Mixer[(C1, E), C2], I: Mixer[(C2, Unit), C1]):FunctionK[Caio[C2, V, L, *], Caio[C1, V, L, *]] =
+  def resolveWith[C1, C2, E, V, L](e:E)(implicit M: Mixer[(C1, E), C2], I: Mixer[(C2, Unit), C1]):FunctionK[Caio[C2, V, L, *], Caio[C1, V, L, *]] =
     new CaioFunctionK[C2, C1, V, L](c1 => M.mix(c1 -> e), (c2, _) => I.mix(c2 -> (())))
 }
