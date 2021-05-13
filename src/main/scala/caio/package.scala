@@ -1,4 +1,3 @@
-import caio.std.CaioFailuresAsThrowable
 import cats.data.NonEmptyList
 
 import cats.effect.{Fiber, Outcome}
@@ -15,7 +14,7 @@ package object caio {
 
   implicit class ErrorOps[V](val eof: ErrorOrFailure[V]) extends AnyVal {
     def toThrowable:Throwable =
-      eof.fold[Throwable](identity, CaioFailuresAsThrowable.apply)
+      eof.fold[Throwable](identity, CaioUnhandledFailuresException.apply)
   }
 
 }

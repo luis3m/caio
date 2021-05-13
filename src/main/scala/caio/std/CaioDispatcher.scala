@@ -38,8 +38,8 @@ class CaioDispatcher[C, V, L: Monoid]
         Vector(IO(cb(Right(a))), onSuccess(c2, l)).parSequence_.as(None)
       case Right(FoldCaioFailure(c2, l, head, tail)) =>
         val nel = NonEmptyList(head, tail)
-        Vector(IO(cb(Left(CaioFailuresAsThrowable(nel)))), onFailure(nel, c2, l)).parSequence_.as(None)
-      case Right(FoldCaioError(c2, l, ex@CaioFailuresAsThrowable(failures:NonEmptyList[V@unchecked]))) =>
+        Vector(IO(cb(Left(CaioUnhandledFailuresException(nel)))), onFailure(nel, c2, l)).parSequence_.as(None)
+      case Right(FoldCaioError(c2, l, ex@CaioUnhandledFailuresException(failures:NonEmptyList[V@unchecked]))) =>
         Vector(IO(cb(Left(ex))), onFailure(failures, c2, l)).parSequence_.as(None)
       case Right(FoldCaioError(c2, l, ex)) =>
         Vector(IO(cb(Left(ex))), onError(ex, c2, l)).parSequence_.as(None)
