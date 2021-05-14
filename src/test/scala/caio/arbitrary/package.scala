@@ -39,7 +39,7 @@ package object arbitrary {
     getArbitrary[V].map(Caio.fail(_))
 
   def genAsync[C, V, L, A: Arbitrary]: Gen[Caio[C, V, L, A]] =
-    getArbitrary[(Either[Throwable, A] => Unit) => Unit].map(Caio.async_[C, V, L, A])
+    getArbitrary[(Either[Throwable, A] => Unit) => Unit].map(Caio.async_[A])
 
   def genTell[C, V, L: Monoid: Arbitrary, A: Arbitrary]: Gen[Caio[C, V, L, A]] =
     getArbitrary[L].flatMap(l => genPure[C, V, L, A].map(Caio.tell(l) *> _))

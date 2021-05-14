@@ -1,6 +1,6 @@
 package caio.mtl
 
-import cats.mtl.{Ask, Stateful}
+import cats.mtl.Stateful
 import io.typechecked.alphabetsoup.Mixer
 import shapeless.=:!=
 

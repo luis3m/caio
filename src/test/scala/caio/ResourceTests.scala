@@ -144,7 +144,7 @@ class ResourceTests extends TestInstances {
             .use(Caio.pure)
             .guaranteeCase[C, V, L, Int](stop.complete(_).void)
 
-          r.start[C, V, L, Int].flatMap { fiber =>
+          r.start.flatMap { fiber =>
             Caio.sleep(200.millis) *> fiber.cancel *> stop.get
           }
         }
@@ -479,7 +479,7 @@ class ResourceTests extends TestInstances {
             .onFinalizeCase(stop.complete(_).void)
             .use(Caio.pure(_))
 
-          r.start[C, V, L, Int].flatMap { fiber =>
+          r.start.flatMap { fiber =>
             Caio.sleep(200.millis) *> fiber.cancel *> stop.get
           }
         }

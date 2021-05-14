@@ -107,7 +107,7 @@ class CaioCatsEffectTests extends TestInstances {
   testAsync("Caio.async protects against multiple callback calls") { params =>
     val effect = new AtomicInteger()
 
-    val caio = Caio.async_[C, V, L, Int] { cb =>
+    val caio = Caio.async_[Int] { cb =>
       cb(Right(10))
       cb(Right(20))
     }
@@ -121,7 +121,7 @@ class CaioCatsEffectTests extends TestInstances {
   }
 
   testAsync("Caio.async does not break referential transparency") { params =>
-    val caio = Caio.async_[C, V, L, Int](_(Right(10)))
+    val caio = Caio.async_[Int](_(Right(10)))
     val sum = for (a <- caio; b <- caio; c <- caio) yield a + b + c
     val value = params.CE.unsafeRunSync(sum)
     assertEquals(value, 30)
@@ -258,7 +258,7 @@ class CaioCatsEffectTests extends TestInstances {
 
   testAsync("IO.async.attempt.map") { params =>
     val dummy = new RuntimeException("dummy")
-    val source = Caio.async_[C, V, L, Int] { callback =>
+    val source = Caio.async_[Int] { callback =>
       params.EC.execute(() => callback(Left(dummy)))
     }
 
@@ -276,7 +276,7 @@ class CaioCatsEffectTests extends TestInstances {
 
   testAsync("IO.async.flatMap.attempt.map") { params =>
     val dummy = new RuntimeException("dummy")
-    val source = Caio.async_[C, V, L, Int] { callback =>
+    val source = Caio.async_[Int] { callback =>
       params.EC.execute(() => callback(Left(dummy)))
     }
 
@@ -294,7 +294,7 @@ class CaioCatsEffectTests extends TestInstances {
 
   testAsync("IO.async.attempt.flatMap") { params =>
     val dummy = new RuntimeException("dummy")
-    val source = Caio.async_[C, V, L, Int] { callback =>
+    val source = Caio.async_[Int] { callback =>
       params.EC.execute(() => callback(Left(dummy)))
     }
 
@@ -338,7 +338,7 @@ class CaioCatsEffectTests extends TestInstances {
 
   testAsync("start forks automatically") { params =>
     import params._
-    val value = RealCE.unsafeRunSync(Caio(1).start[C, V, L, Int].flatMap(_.joinWith(Caio.pure(0))))
+    val value = RealCE.unsafeRunSync(Caio(1).start.flatMap(_.joinWith(Caio.pure(0))))
     assertEquals(value, 1)
   }
 
@@ -381,7 +381,7 @@ class CaioCatsEffectTests extends TestInstances {
 
     val caio = for {
       pa <- Deferred[CaioT, Unit]
-      fiber <- Caio.unit.guarantee(pa.complete(()) *> Caio.sleep(200.millis)).start[C, V, L, Unit]
+      fiber <- Caio.unit.guarantee(pa.complete(()) *> Caio.sleep(200.millis)).start
       _ <- pa.get
       _ <- fiber.cancel
     } yield ()
@@ -398,7 +398,7 @@ class CaioCatsEffectTests extends TestInstances {
 
     val caio = for {
       pa <- Deferred[CaioT, Unit]
-      fiber <- Caio.unit.guarantee(pa.complete(()) *> Caio.sleep(200.millis) *> Caio.raiseError(dummy)).start[C, V, L, Unit]
+      fiber <- Caio.unit.guarantee(pa.complete(()) *> Caio.sleep(200.millis) *> Caio.raiseError(dummy)).start
       _ <- pa.get
       _ <- fiber.cancel
     } yield ()
@@ -415,7 +415,7 @@ class CaioCatsEffectTests extends TestInstances {
       pa <- Deferred[CaioT, Unit]
       fibA <- Caio.unit
         .bracket[C, V, L, Unit, Unit](_ => Caio.unit.guarantee(pa.complete(()) *> Caio.sleep(200.millis)))(_ => Caio.unit)
-        .start[C, V, L, Unit]
+        .start
       _ <- pa.get
       _ <- fibA.cancel
     } yield ()
@@ -432,7 +432,7 @@ class CaioCatsEffectTests extends TestInstances {
       pa <- Deferred[CaioT, Unit]
       fiber <- Caio.unit
         .bracket[C, V, L, Unit, Unit](_ => (pa.complete(()) *> Caio.never).guarantee(Caio.sleep(200.millis)))(_ => Caio.unit)
-        .start[C, V, L, Unit]
+        .start
       _ <- pa.get
       _ <- Caio.race(fiber.cancel, fiber.cancel)
     } yield ()
@@ -449,7 +449,7 @@ class CaioCatsEffectTests extends TestInstances {
       pa <- Deferred[CaioT, Unit]
       fiber <- (pa.complete(()) *> Caio.sleep(200.millis))
         .bracket[C, V, L, Unit, Unit](_ => Caio.unit)(_ => Caio.sleep(200.millis))
-        .start[C, V, L, Unit]
+        .start
       _ <- pa.get
       _ <- Caio.race(fiber.cancel, fiber.cancel)
     } yield ()
@@ -466,7 +466,7 @@ class CaioCatsEffectTests extends TestInstances {
       Caio.sleep(1.second)
 
     val caio = for {
-      fiber <- sleep.start[C, V, L, Unit]
+      fiber <- sleep.start
       _ <- fiber.cancel
       _ <- fiber.cancel
     } yield ()

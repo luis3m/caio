@@ -3,7 +3,7 @@ package caio.std
 import caio.Event._
 import caio.implicits.StaticImplicits
 import caio.mtl.ApplicativeFail
-import caio.{Caio, Event, Failure}
+import caio.{Caio, Failure}
 
 import cats.{ Applicative, ApplicativeError, Monoid }
 import cats.syntax.parallel._
@@ -93,7 +93,7 @@ class CaioConcurrentEffectTests extends AsyncFunSpec with Matchers {
       val program =
         Listen[CaioT, EventLog].listen {
           for {
-            _ <- Tell[CaioT, EventLog].tell(Vector(event1)).start[Int, Failure, EventLog, Unit]
+            _ <- Tell[CaioT, EventLog].tell(Vector(event1)).start
             _ <- Tell[CaioT, EventLog].tell(Vector(event2))
           } yield ()
         }
@@ -105,7 +105,7 @@ class CaioConcurrentEffectTests extends AsyncFunSpec with Matchers {
       val program =
         Listen[CaioT, EventLog].listen {
           for {
-            fiber <- Tell[CaioT, EventLog].tell(Vector(event1)).start[Int, Failure, EventLog, Unit]
+            fiber <- Tell[CaioT, EventLog].tell(Vector(event1)).start
             _     <- Tell[CaioT, EventLog].tell(Vector(event2))
             _     <- fiber.join
           } yield ()
@@ -132,7 +132,7 @@ class CaioConcurrentEffectTests extends AsyncFunSpec with Matchers {
     it("Should set state when a fiber is joined") {
       val program =
         for {
-          fiber <- Stateful[CaioT, Int].set(1).start[Int, Failure, EventLog, Unit]
+          fiber <- Stateful[CaioT, Int].set(1).start
           _     <- fiber.join
           state <- Stateful[CaioT, Int].get
         } yield state
